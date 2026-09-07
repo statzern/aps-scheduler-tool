@@ -1,3 +1,8 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Pain &amp; Periop Scheduler</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -46,8 +51,11 @@
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
   --backdrop: rgba(0,0,0,.6);
 }
-*{box-sizing:border-box;}
-body{ background:var(--bg); color:var(--ink); font-family:'IBM Plex Sans',system-ui,sans-serif; }
+*,*::before,*::after{ box-sizing:border-box; }
+html{ color-scheme:light dark; }
+body{ margin:0; background:var(--bg); color:var(--ink); font-family:'IBM Plex Sans',system-ui,sans-serif; font-size:14px; }
+img{ max-width:100%; }
+[hidden]{ display:none!important; }
 h1,h2,h3{ font-family:'Fraunces',Georgia,serif; font-weight:600; text-wrap:balance; margin:0; color:var(--ink); }
 .mono{ font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums; }
 button, input, select, textarea{ font-family:inherit; color:inherit; }
@@ -173,20 +181,57 @@ details.advanced[open] summary{ margin-bottom:10px; }
 
 .footer-note{ margin-top:30px; font-size:12px; color:var(--ink-faint); text-align:center; }
 @media (prefers-reduced-motion: reduce){ *{ transition:none!important; } }
-</style>
 
-<div class="app">
+.auth-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; padding:24px; }
+.auth-card{ width:100%; max-width:380px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); padding:28px; }
+.auth-card h1{ font-size:22px; margin-bottom:4px; }
+.auth-card .sub{ color:var(--ink-soft); font-size:13px; margin-bottom:20px; }
+.auth-error{ background:var(--bad-soft); color:var(--bad); border-radius:7px; padding:8px 11px; font-size:13px; margin-bottom:12px; }
+.auth-tabs{ display:flex; gap:4px; margin-bottom:18px; background:var(--surface-2); border-radius:8px; padding:3px; }
+.auth-tab{ flex:1; text-align:center; padding:7px 0; border-radius:6px; font-size:13px; font-weight:600; cursor:pointer; color:var(--ink-soft); border:none; background:none; }
+.auth-tab.active{ background:var(--surface); color:var(--ink); box-shadow:var(--shadow); }
+.role-badge{ font-size:11px; font-weight:600; padding:2px 8px; border-radius:20px; text-transform:uppercase; letter-spacing:.04em; }
+.role-badge.admin{ background:var(--aps-soft); color:var(--aps); }
+.role-badge.staff{ background:var(--surface-2); color:var(--ink-soft); }
+</style>
+</head>
+<body>
+
+<div id="authScreen" class="auth-screen" hidden>
+  <div class="auth-card">
+    <h1>Pain &amp; Periop Scheduler</h1>
+    <div class="sub">Sign in to view or submit your rotation requests.</div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="authTabSignin" type="button">Sign in</button>
+      <button class="auth-tab" id="authTabSignup" type="button">Create account</button>
+    </div>
+    <div id="authError" class="auth-error" hidden></div>
+    <div class="field" style="margin-bottom:12px;"><label for="authEmail">Email</label><input class="input" type="email" id="authEmail" autocomplete="email"></div>
+    <div class="field" style="margin-bottom:16px;"><label for="authPassword">Password</label><input class="input" type="password" id="authPassword" autocomplete="current-password"></div>
+    <button class="btn btn-primary" id="authSubmit" style="width:100%;">Sign in</button>
+    <div class="row between" style="margin-top:12px;">
+      <button class="btn-ghost" id="authForgot" style="border:none;background:none;cursor:pointer;color:var(--ink-soft);font-size:12.5px;font-family:inherit;padding:0;">Forgot password?</button>
+      <span class="hint" id="authHint"></span>
+    </div>
+  </div>
+</div>
+
+<div class="app" hidden>
   <div class="topbar">
     <div class="brand">
       <h1>Pain &amp; Periop Scheduler</h1>
       <span class="sub">APS &amp; PCS rotation planning</span>
     </div>
-    <div class="sync-status" id="syncStatus"><span class="dot" id="syncDot"></span><span id="syncLabel">Loading…</span></div>
+    <div class="sync-status">
+      <span class="role-badge" id="roleBadge"></span>
+      <span id="whoami"></span>
+      <button class="btn btn-ghost btn-sm" id="btnSignOut">Sign out</button>
+    </div>
   </div>
 
   <div class="tabs" role="tablist">
-    <button class="tab active" data-tab="setup" role="tab">Setup</button>
-    <button class="tab" data-tab="roster" role="tab">Roster &amp; Requests <span class="count" id="rosterCount"></span></button>
+    <button class="tab active" data-tab="setup" data-admin-only role="tab">Setup</button>
+    <button class="tab" data-tab="roster" role="tab"><span id="rosterTabLabel">Roster &amp; Requests</span> <span class="count" id="rosterCount"></span></button>
     <button class="tab" data-tab="schedule" role="tab">Schedule</button>
     <button class="tab" data-tab="report" role="tab">Report</button>
   </div>
@@ -205,7 +250,31 @@ details.advanced[open] summary{ margin-bottom:10px; }
 
 <div class="toast" id="toast"></div>
 
-<script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import {
+  getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
+  signOut, sendPasswordResetEmail
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-auth.js";
+import {
+  getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, getDocs
+} from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  projectId: "aps-cps-scheduler",
+  appId: "1:853103469719:web:62c1bf5094aa8e8f9cf5d2",
+  storageBucket: "aps-cps-scheduler.firebasestorage.app",
+  apiKey: "AIzaSyCaPRK9JqvFeHzB8lcGVL-7THwUVvw5-YI",
+  authDomain: "aps-cps-scheduler.firebaseapp.com",
+  messagingSenderId: "853103469719",
+};
+const fbApp = initializeApp(firebaseConfig);
+const fbAuth = getAuth(fbApp);
+const fsDb = getFirestore(fbApp);
+// The one email allowed to self-provision as the first admin — must match
+// the isBootstrapOwner() check in firestore.rules.
+const OWNER_EMAIL = 'statzern@gmail.com';
+
 (function(){
 "use strict";
 
@@ -224,6 +293,15 @@ function monthKey(date){ return `${date.getFullYear()}-${String(date.getMonth()+
 function monthLabel(date){ return `${MON[date.getMonth()]} ${date.getFullYear()}`; }
 function firstWeekdayOnOrAfter(date,dow){ let d=date; while(d.getDay()!==dow) d=addDays(d,1); return d; }
 function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/** Plain browser download — a real site, not a sandboxed frame, so a normal
+ * object-URL + temporary <a> click works fine (no special capability needed). */
+function downloadBlob(blob, filename){
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
 function uid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'id-'+Math.random().toString(36).slice(2)+Date.now()); }
 
 /* ---------------------------------------------------------------------
@@ -241,101 +319,14 @@ const state = {
   scheduleMeta: null,    // {generatedAt, score}
   modal: null,           // { mode:'person'|'import', ... } while a modal is open
   importQueue: [],       // File objects still waiting to be reviewed
-  backend: null,         // 'db' | 'local'
-  db: null
+  auth: { user:null, isAdmin:false, myPerson:null }
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
+function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
 
 /* ---------------------------------------------------------------------
-   PERSISTENCE
+   PERSISTENCE — Firebase Auth + Firestore
 --------------------------------------------------------------------- */
-const LOCAL_KEY = 'pps_scheduler_v1';
-
-function localLoad(){
-  try{
-    const raw = localStorage.getItem(LOCAL_KEY);
-    if(!raw) return null;
-    return JSON.parse(raw);
-  }catch(e){ return null; }
-}
-function localSave(){
-  try{
-    localStorage.setItem(LOCAL_KEY, JSON.stringify({
-      config: state.config, people: state.people,
-      assignment: state.assignment, locks: state.locks, scheduleMeta: state.scheduleMeta
-    }));
-  }catch(e){ /* storage unavailable — silently no-op, in-memory state still works */ }
-}
-
-/** Deep-clones data coming out of a (frozen) db snapshot into a fresh,
- * mutable copy. Falls back to JSON round-tripping if structuredClone isn't
- * available in this view — our documents are always plain JSON anyway. */
-function cloneData(x){
-  try{ return typeof structuredClone==='function' ? structuredClone(x) : JSON.parse(JSON.stringify(x)); }
-  catch(e){ return JSON.parse(JSON.stringify(x)); }
-}
-function withTimeout(promise, ms, fallbackValue){
-  return new Promise((resolve)=>{
-    let done=false;
-    const t=setTimeout(()=>{ if(!done){ done=true; resolve(fallbackValue); } }, ms);
-    Promise.resolve(promise).then(v=>{ if(!done){ done=true; clearTimeout(t); resolve(v); } }, ()=>{ if(!done){ done=true; clearTimeout(t); resolve(fallbackValue); } });
-  });
-}
-
-async function initPersistence(){
-  let db=null;
-  try{ db = window.claude ? await withTimeout(window.claude.use('db'), 6000, null) : null; }catch(e){ db=null; }
-  state.db = db;
-  state.backend = db ? 'db' : 'local';
-  setSyncStatus();
-
-  if(db){
-    const result = await withTimeout(Promise.all([
-      db.doc('config/settings').get(),
-      db.collection('people').get(),
-      db.doc('schedule/current').get()
-    ]), 8000, null);
-    if(result){
-      try{
-        const [cfgSnap, peopleSnap, schedSnap] = result;
-        if(cfgSnap.exists){ Object.assign(state.config, cloneData(cfgSnap.data())); }
-        state.people = peopleSnap.docs.map(d=>normalizePerson(d.data()));
-        if(schedSnap.exists){ const d=cloneData(schedSnap.data()); state.assignment=d.assignment||{}; state.locks=d.locks||{}; state.scheduleMeta = d.generatedAt?{generatedAt:d.generatedAt, score:d.score}:null; }
-      }catch(e){ toast('Could not load shared data — starting fresh.'); }
-    } else {
-      state.backend = 'local';
-      setSyncStatus();
-      const local = localLoad();
-      if(local){
-        Object.assign(state.config, local.config||{});
-        state.people = (local.people||[]).map(normalizePerson);
-        state.assignment = local.assignment||{};
-        state.locks = local.locks||{};
-        state.scheduleMeta = local.scheduleMeta||null;
-      }
-      toast('Shared storage is taking too long to respond — working locally for now.');
-    }
-  } else {
-    const local = localLoad();
-    if(local){
-      Object.assign(state.config, local.config||{});
-      state.people = (local.people||[]).map(normalizePerson);
-      state.assignment = local.assignment||{};
-      state.scheduleMeta = local.scheduleMeta||null;
-    }
-  }
-  if(!state.config.startDate){
-    const today = new Date();
-    state.config.startDate = isoDate(today);
-    state.config.endDate = isoDate(addDays(today,180));
-  }
-}
-
-/** Database snapshots (and their nested objects/arrays) are frozen by the
- * platform — always copy OUT of one with a fresh, mutable clone rather than
- * holding a reference, or the first edit throws "Cannot assign to read only
- * property". normalizePerson is the one place every person passes through
- * (db load, local load, import), so it clones defensively here. */
 function toTargetNum(v){ return (v===undefined || v===null || v==='') ? null : Number(v); }
 /** targetWeeks is per service — {APS: number|null, PCS: number|null} — since
  * someone covering both rotations almost always wants a different count of
@@ -356,6 +347,7 @@ function normalizePerson(p){
   return {
     id: p.id || uid(),
     name: p.name || 'Unnamed',
+    email: p.email ? String(p.email).trim().toLowerCase() : '',
     services,
     targetWeeks,
     restrictToRequested: !!p.restrictToRequested,
@@ -363,57 +355,66 @@ function normalizePerson(p){
   };
 }
 
-/** Every write is wrapped in a timeout so a slow or unresponsive shared store
- * can NEVER hang the caller indefinitely — the local copy is already saved by
- * the time this runs, so callers should not (and no longer do) await these
- * before updating the screen. A timeout or failure surfaces as a toast but
- * never blocks the UI. */
-const PERSIST_TIMEOUT_MS = 8000;
-async function persistConfig(){
-  localSave();
-  if(state.backend==='db'){
-    const TIMED_OUT = Symbol('timeout');
-    try{
-      const r = await withTimeout(state.db.doc('config/settings').set(state.config), PERSIST_TIMEOUT_MS, TIMED_OUT);
-      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
-    }catch(e){ toast('Save failed: '+e.message); }
+/** Loads config/people/schedule from Firestore. Called once right after
+ * sign-in (and again on manual refresh) — not a live listener, to keep the
+ * edit model simple: load, edit, save, reload picks up others' changes. */
+async function loadAllData(){
+  const [cfgSnap, peopleSnap, schedSnap] = await Promise.all([
+    getDoc(doc(fsDb,'config','settings')),
+    getDocs(collection(fsDb,'people')),
+    getDoc(doc(fsDb,'schedule','current'))
+  ]);
+  if(cfgSnap.exists()) Object.assign(state.config, cfgSnap.data());
+  state.people = peopleSnap.docs.map(d=>normalizePerson({ id:d.id, ...d.data() }));
+  if(schedSnap.exists()){
+    const d = schedSnap.data();
+    state.assignment = d.assignment||{};
+    state.locks = d.locks||{};
+    state.scheduleMeta = d.generatedAt ? { generatedAt:d.generatedAt, score:d.score } : null;
+  }
+  if(!state.config.startDate){
+    const today = new Date();
+    state.config.startDate = isoDate(today);
+    state.config.endDate = isoDate(addDays(today,180));
   }
 }
-async function persistPerson(p){
-  localSave();
-  if(state.backend==='db'){
-    const TIMED_OUT = Symbol('timeout');
-    try{
-      const r = await withTimeout(state.db.collection('people').doc(p.id).set(p), PERSIST_TIMEOUT_MS, TIMED_OUT);
-      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
-    }catch(e){ toast('Save failed: '+e.message); }
-  }
-}
-async function persistDeletePerson(id){
-  localSave();
-  if(state.backend==='db'){
-    const TIMED_OUT = Symbol('timeout');
-    try{
-      const r = await withTimeout(state.db.collection('people').doc(id).delete(), PERSIST_TIMEOUT_MS, TIMED_OUT);
-      if(r===TIMED_OUT) toast('Shared delete is taking a while — it will keep trying in the background.');
-    }catch(e){ toast('Delete failed: '+e.message); }
-  }
-}
-async function persistSchedule(){
-  localSave();
-  if(state.backend==='db'){
-    const TIMED_OUT = Symbol('timeout');
-    try{
-      const r = await withTimeout(state.db.doc('schedule/current').set({ assignment: state.assignment, locks: state.locks, ...state.scheduleMeta }), PERSIST_TIMEOUT_MS, TIMED_OUT);
-      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
-    }catch(e){ toast('Save failed: '+e.message); }
-  }
+/** Who am I, and am I an admin? Called after sign-in and after the roster
+ * loads. Firestore security rules enforce the real permission boundary —
+ * this just drives what the UI offers, as a convenience, never as the only
+ * gate. */
+async function refreshRole(){
+  state.auth.isAdmin = false;
+  state.auth.myPerson = null;
+  const email = myEmail();
+  if(!email) return;
+  try{
+    const snap = await getDoc(doc(fsDb,'admins',email));
+    state.auth.isAdmin = snap.exists();
+  }catch(e){ /* not an admin, or offline — either way, treat as non-admin */ }
+  state.auth.myPerson = state.people.find(p=>p.email && p.email===email) || null;
 }
 
-function setSyncStatus(){
-  const dot=document.getElementById('syncDot'), lbl=document.getElementById('syncLabel');
-  if(state.backend==='db'){ dot.classList.remove('local'); lbl.textContent='Synced — shared with your group'; }
-  else{ dot.classList.add('local'); lbl.textContent='Saved to this browser only'; }
+async function persistConfig(){
+  try{ await setDoc(doc(fsDb,'config','settings'), state.config); }
+  catch(e){ toast('Save failed: '+e.message); }
+}
+/** Admins can write the whole person doc. A non-admin editing their own
+ * entry sends ONLY the fields the security rules allow them to touch —
+ * matching the server-side contract exactly means this can never be
+ * rejected by a rule the UI didn't anticipate. */
+async function persistPerson(p){
+  try{
+    if(state.auth.isAdmin) await setDoc(doc(fsDb,'people',p.id), p);
+    else await updateDoc(doc(fsDb,'people',p.id), { blockStatus:p.blockStatus, targetWeeks:p.targetWeeks });
+  }catch(e){ toast('Save failed: '+e.message); }
+}
+async function persistDeletePerson(id){
+  try{ await deleteDoc(doc(fsDb,'people',id)); }
+  catch(e){ toast('Delete failed: '+e.message); }
+}
+async function persistSchedule(){
+  try{ await setDoc(doc(fsDb,'schedule','current'), { assignment:state.assignment, locks:state.locks, ...state.scheduleMeta }); }
+  catch(e){ toast('Save failed: '+e.message); }
 }
 
 /* ---------------------------------------------------------------------
@@ -671,6 +672,10 @@ function unfilledReason(b){
 --------------------------------------------------------------------- */
 function renderSetup(){
   const el = document.getElementById('panel-setup');
+  if(!state.auth.isAdmin){
+    el.innerHTML = `<div class="card"><div class="empty-state"><strong>Admins only</strong>Only an admin can change the rotation window, holidays, or solver settings.</div></div>`;
+    return;
+  }
   const c = state.config;
   el.innerHTML = `
     <div class="card">
@@ -804,8 +809,85 @@ function groupByMonth(blocks){
 /* ---------------------------------------------------------------------
    RENDERING — ROSTER
 --------------------------------------------------------------------- */
+/** Admins get the full roster; everyone else gets just their own entry. */
 function renderRoster(){
+  if(state.auth.isAdmin) renderRosterAdmin();
+  else renderMyRequests();
+}
+/** Non-admin view: just their own entry, editable only for blockStatus and
+ * targetWeeks — everything else (name, services, restrict flag) is admin-only,
+ * enforced both here (no controls for it) and by the Firestore rules. */
+function renderMyRequests(){
   const el = document.getElementById('panel-roster');
+  document.getElementById('rosterTabLabel').textContent = 'My Requests';
+  document.getElementById('rosterCount').textContent = '';
+  const person = state.auth.myPerson;
+  if(!person){
+    el.innerHTML = `<div class="card"><div class="empty-state"><strong>Your account isn't linked to the roster yet</strong>Ask your admin to add <strong>${esc(myEmail())}</strong> as your email on your roster entry, then reload this page.</div></div>`;
+    return;
+  }
+  if(!state.myRequestsDraft || state.myRequestsDraft.id!==person.id){
+    state.myRequestsDraft = { id:person.id, blockStatus:{...person.blockStatus}, targetWeeks:{...person.targetWeeks} };
+  }
+  const draft = state.myRequestsDraft;
+  const relevantBlocks = state.blocks.filter(b=>person.services.includes(b.service));
+  const groups = groupByMonth(relevantBlocks);
+  el.innerHTML = `
+    <div class="card">
+      <h2>My requests — ${esc(person.name)}</h2>
+      <div class="desc">Mark which weeks you want or can't do, and your target week count per service. Your admin handles your name, services, and everything else about your profile.</div>
+      <div class="grid-2">
+        ${person.services.includes('APS')?`<div class="field"><label for="myTargetAPS">APS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetAPS" value="${draft.targetWeeks.APS==null?'':draft.targetWeeks.APS}"></div>`:''}
+        ${person.services.includes('PCS')?`<div class="field"><label for="myTargetPCS">PCS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetPCS" value="${draft.targetWeeks.PCS==null?'':draft.targetWeeks.PCS}"></div>`:''}
+      </div>
+      ${person.restrictToRequested?'<div class="hint" style="margin-top:10px;">Your admin has set you to only be scheduled on weeks marked Requested below.</div>':''}
+    </div>
+    ${relevantBlocks.length===0 ? `<div class="card" style="margin-top:16px;"><div class="empty-state">No weeks are set up yet — check back once your admin sets the rotation window.</div></div>` : `
+    <div class="card" style="margin-top:16px;">
+      <div class="row between" style="margin-bottom:8px;">
+        <strong style="font-size:13px;">Weeks (${relevantBlocks.length})</strong>
+        <span class="hint">Available (default) · Requested · Unavailable</span>
+      </div>
+      <div class="block-list" style="max-height:520px;">
+        ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
+          const st = draft.blockStatus[b.key] || 'neutral';
+          return blockRowHtml(b, `<div class="segmented" data-key="${b.key}">
+            <button class="seg-btn ${st==='neutral'?'active':''}" data-v="neutral">Available</button>
+            <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
+            <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
+          </div>`);
+        }).join('')}`).join('')}
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <button class="btn btn-primary" id="btnSaveMyRequests">Save my requests</button>
+      </div>
+    </div>`}
+  `;
+  el.querySelectorAll('.segmented').forEach(seg=>{
+    seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
+      const key = seg.dataset.key, v = btn.dataset.v;
+      if(v==='neutral') delete draft.blockStatus[key]; else draft.blockStatus[key]=v;
+      seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
+    });
+  });
+  const saveBtn = document.getElementById('btnSaveMyRequests');
+  if(saveBtn) saveBtn.onclick = ()=>{
+    try{
+      const aEl=document.getElementById('myTargetAPS'), pEl=document.getElementById('myTargetPCS');
+      draft.targetWeeks = {
+        APS: person.services.includes('APS') && aEl && aEl.value!=='' ? Number(aEl.value) : null,
+        PCS: person.services.includes('PCS') && pEl && pEl.value!=='' ? Number(pEl.value) : null
+      };
+      person.blockStatus = {...draft.blockStatus};
+      person.targetWeeks = {...draft.targetWeeks};
+      toast('Your requests were saved.');
+      persistPerson(person); // background
+    }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
+  };
+}
+function renderRosterAdmin(){
+  const el = document.getElementById('panel-roster');
+  document.getElementById('rosterTabLabel').textContent = 'Roster & Requests';
   document.getElementById('rosterCount').textContent = state.people.length ? `(${state.people.length})` : '';
   el.innerHTML = `
     <div class="card">
@@ -843,7 +925,7 @@ function renderPeopleList(){
     const unavailCount = Object.values(p.blockStatus).filter(v=>v==='unavailable').length;
     return `<div class="person-card">
       <div>
-        <div class="name">${esc(p.name)||'<em style=\"color:var(--ink-faint)\">Unnamed</em>'}</div>
+        <div class="name">${esc(p.name)||'<em style=\"color:var(--ink-faint)\">Unnamed</em>'} ${p.email?`<span class="hint mono" style="font-weight:400;">${esc(p.email)}</span>`:'<span class="pill pill-warn">no login linked</span>'}</div>
         <div class="meta">${svc}
           ${targetBits?`<span class="small">${esc(targetBits)}</span>`:''}
           ${reqCount?`<span class="small">${reqCount} requested</span>`:''}
@@ -902,6 +984,9 @@ function renderPersonModal(){
     </div>
     <div class="grid-2">
       <div class="field"><label for="pName">Name</label><input class="input" id="pName" value="${esc(p.name)}" placeholder="Full name"></div>
+      <div class="field"><label for="pEmail">Login email (optional)</label><input class="input" type="email" id="pEmail" value="${esc(p.email)}" placeholder="their.email@example.com"><span class="hint">Lets them sign in and edit their own requests.</span></div>
+    </div>
+    <div class="grid-2" style="margin-top:12px;">
       <div class="field"><label>Eligible for</label>
         <div class="row gap-8" style="padding-top:6px;">
           <label class="checkbox-row"><input type="checkbox" id="pAPS" ${p.services.includes('APS')?'checked':''}> APS</label>
@@ -961,6 +1046,7 @@ function renderPersonModal(){
   document.getElementById('btnSavePerson').onclick = ()=>{
     try{
       p.name = document.getElementById('pName').value.trim() || 'Unnamed';
+      p.email = document.getElementById('pEmail').value.trim().toLowerCase();
       p.services = [ ...(document.getElementById('pAPS').checked?['APS']:[]), ...(document.getElementById('pPCS').checked?['PCS']:[]) ];
       const aEl = document.getElementById('pTargetAPS'), pEl = document.getElementById('pTargetPCS');
       p.targetWeeks = {
@@ -1004,11 +1090,8 @@ async function exportRosterXlsx(){
   XLSX.utils.book_append_sheet(wb, wsB, 'Blocks reference');
   const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-  try{
-    const dl = window.claude ? await window.claude.use('downloads') : null;
-    if(dl){ await dl.save({filename:'roster.xlsx', data:blob}); toast('Roster exported.'); }
-    else toast('Downloads aren\'t available in this view.');
-  }catch(e){ if(e && e.code!=='declined') toast('Export failed: '+(e.message||e.code)); }
+  downloadBlob(blob, 'roster.xlsx');
+  toast('Roster exported.');
 }
 function importRosterBackupXlsx(file){
   const reader = new FileReader();
@@ -1243,11 +1326,8 @@ async function exportScheduleXlsx(){
   XLSX.utils.book_append_sheet(wb, wsRollup, 'Requested vs Given');
   const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
-  try{
-    const dl = window.claude ? await window.claude.use('downloads') : null;
-    if(dl){ await dl.save({filename:'schedule.xlsx', data:blob}); toast('Schedule exported.'); }
-    else toast('Downloads aren\'t available in this view.');
-  }catch(e){ if(e && e.code!=='declined') toast('Export failed: '+(e.message||e.code)); }
+  downloadBlob(blob, 'schedule.xlsx');
+  toast('Schedule exported.');
 }
 
 /* ---------------------------------------------------------------------
@@ -1264,10 +1344,10 @@ function renderSchedule(){
         <div><h2>Schedule</h2><div class="desc" style="margin-bottom:0;">Runs a search over every valid combination to maximize satisfied requests and target weeks while keeping every week covered. Pin a specific week yourself using the "Assigned to" dropdown below — the solver will always leave a pinned week alone and fill in the rest around it.</div></div>
         <div class="row gap-8">
           <button class="btn" id="btnExportSchedule" ${state.blocks.length===0?'disabled':''}>Export (.xlsx)</button>
-          <button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>
+          ${state.auth.isAdmin ? `<button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>` : ''}
         </div>
       </div>
-      ${!canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
+      ${state.auth.isAdmin && !canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
     </div>
     ${state.blocks.length>0 ? `
     <div class="stat-grid" style="margin-top:16px;">
@@ -1278,8 +1358,9 @@ function renderSchedule(){
     </div>` : ''}
     <div class="card" id="scheduleTableCard" style="margin-top:16px;"></div>
   `;
-  document.getElementById('btnGenerate').onclick = async ()=>{
-    document.getElementById('btnGenerate').textContent='Generating…'; document.getElementById('btnGenerate').disabled=true;
+  const genBtn = document.getElementById('btnGenerate');
+  if(genBtn) genBtn.onclick = async ()=>{
+    genBtn.textContent='Generating…'; genBtn.disabled=true;
     await new Promise(r=>setTimeout(r,20)); // let the button repaint before the sync solve
     const result = runSolver();
     if(result){
@@ -1331,7 +1412,9 @@ function renderScheduleTable(){
           <td class="hint">${esc(declined)||'—'}</td>
           <td>
             <div class="row gap-8" style="flex-wrap:nowrap;">
-              <select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>
+              ${state.auth.isAdmin
+                ? `<select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>`
+                : `<span>${p ? esc(p.name) : '<span class="hint">unfilled</span>'}</span>`}
               ${locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
             </div>
             ${!p && hasSchedule ? `<div class="hint" style="margin-top:4px;">${esc(unfilledReason(b))}</div>` : ''}
@@ -1399,35 +1482,111 @@ function toast(msg){
 window.addEventListener('error', (e)=>{ console.error(e.error||e.message); toast('Something went wrong: '+(e.error&&e.error.message||e.message)); });
 window.addEventListener('unhandledrejection', (e)=>{ console.error(e.reason); toast('Something went wrong: '+(e.reason&&e.reason.message||String(e.reason))); });
 function switchTab(name){
+  if(name==='setup' && !state.auth.isAdmin) name = 'roster'; // admin tab hidden but guard anyway
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   ['setup','roster','schedule','report'].forEach(n=>{ document.getElementById('panel-'+n).hidden = n!==name; });
 }
 document.querySelectorAll('.tab').forEach(t=> t.onclick = ()=>{ switchTab(t.dataset.tab); if(t.dataset.tab==='schedule') renderSchedule(); if(t.dataset.tab==='report') renderReport(); });
 document.getElementById('personModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='personModalOverlay') closePersonModal(); });
 
+/** Show/hide chrome that depends on role: the Setup tab, and (defensively,
+ * since a stale tab selection could otherwise leave an admin-only panel
+ * showing) make sure a non-admin never lands on Setup. */
+function applyRoleToChrome(){
+  document.querySelectorAll('[data-admin-only]').forEach(el=> el.hidden = !state.auth.isAdmin);
+  document.getElementById('roleBadge').textContent = state.auth.isAdmin ? 'Admin' : 'Staff';
+  document.getElementById('roleBadge').className = 'role-badge ' + (state.auth.isAdmin ? 'admin' : 'staff');
+  document.getElementById('whoami').textContent = state.auth.user ? state.auth.user.email : '';
+  const activeTab = document.querySelector('.tab.active');
+  if(!state.auth.isAdmin && activeTab && activeTab.dataset.tab==='setup') switchTab('roster');
+}
+
 function renderAll(){
+  applyRoleToChrome();
   renderSetup();
   renderRoster();
   renderSchedule();
   renderReport();
-  document.getElementById('footerNote').textContent = state.backend==='db'
-    ? 'Data is stored with this page and shared with anyone who opens it.'
-    : 'This view can\'t reach shared storage, so data is kept in this browser only — export a roster/schedule backup periodically.';
+  document.getElementById('footerNote').textContent = 'Signed in as ' + (state.auth.user ? state.auth.user.email : '') + ' · ' + (state.auth.isAdmin ? 'admin' : 'staff') + ' access.';
 }
 
-(async function init(){
+/* ---------------------------------------------------------------------
+   AUTH SCREEN
+--------------------------------------------------------------------- */
+let authMode = 'signin';
+function setAuthMode(mode){
+  authMode = mode;
+  document.getElementById('authTabSignin').classList.toggle('active', mode==='signin');
+  document.getElementById('authTabSignup').classList.toggle('active', mode==='signup');
+  document.getElementById('authSubmit').textContent = mode==='signin' ? 'Sign in' : 'Create account';
+  document.getElementById('authHint').textContent = mode==='signin' ? '' : 'Use the email your admin has on file for you.';
+  document.getElementById('authError').hidden = true;
+}
+function showAuthError(err){
+  const el = document.getElementById('authError');
+  const messages = {
+    'auth/invalid-email':'That email address doesn\'t look right.',
+    'auth/user-not-found':'No account found for that email — try "Create account" instead.',
+    'auth/wrong-password':'Wrong password.',
+    'auth/invalid-credential':'Email or password is incorrect.',
+    'auth/email-already-in-use':'An account already exists for that email — try signing in instead.',
+    'auth/weak-password':'Password should be at least 6 characters.',
+    'auth/too-many-requests':'Too many attempts — wait a bit and try again.',
+    'auth/configuration-not-found':'Sign-in isn\'t enabled for this project yet — ask your admin to finish setting up Firebase Authentication.'
+  };
+  el.textContent = messages[err && err.code] || (err && err.message) || 'Something went wrong.';
+  el.hidden = false;
+}
+document.getElementById('authTabSignin').onclick = ()=> setAuthMode('signin');
+document.getElementById('authTabSignup').onclick = ()=> setAuthMode('signup');
+document.getElementById('authSubmit').onclick = async ()=>{
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  if(!email || !password){ showAuthError({message:'Enter an email and password.'}); return; }
+  const btn = document.getElementById('authSubmit');
+  btn.disabled = true;
   try{
-    await initPersistence();
-  }catch(e){
-    console.error('initPersistence failed', e);
-    state.backend = 'local';
-    try{ setSyncStatus(); }catch(e2){}
+    if(authMode==='signin') await signInWithEmailAndPassword(fbAuth, email, password);
+    else await createUserWithEmailAndPassword(fbAuth, email, password);
+  }catch(e){ showAuthError(e); }
+  btn.disabled = false;
+};
+document.getElementById('authForgot').onclick = async ()=>{
+  const email = document.getElementById('authEmail').value.trim();
+  if(!email){ showAuthError({message:'Enter your email above first, then click "Forgot password?" again.'}); return; }
+  try{ await sendPasswordResetEmail(fbAuth, email); document.getElementById('authHint').textContent = 'Password reset email sent.'; }
+  catch(e){ showAuthError(e); }
+};
+document.getElementById('btnSignOut').onclick = ()=> signOut(fbAuth);
+
+/* ---------------------------------------------------------------------
+   BOOT — driven entirely by Firebase auth state
+--------------------------------------------------------------------- */
+onAuthStateChanged(fbAuth, async (user)=>{
+  state.auth.user = user;
+  if(!user){
+    document.getElementById('authScreen').hidden = false;
+    document.querySelector('.app').hidden = true;
+    return;
   }
   try{
+    // The one designated owner self-provisions the very first admin doc —
+    // everyone after that is added by an existing admin. See firestore.rules.
+    if(user.email && user.email.toLowerCase()===OWNER_EMAIL){
+      const ref = doc(fsDb,'admins',OWNER_EMAIL);
+      const snap = await getDoc(ref);
+      if(!snap.exists()) await setDoc(ref, { addedAt:new Date().toISOString(), bootstrap:true });
+    }
+    await loadAllData();
+    await refreshRole();
     rebuildBlocks();
+    document.getElementById('authScreen').hidden = true;
+    document.querySelector('.app').hidden = false;
     renderAll();
   }catch(e){
-    console.error('render failed', e);
+    console.error('load failed', e);
+    document.getElementById('authScreen').hidden = true;
+    document.querySelector('.app').hidden = false;
     const p = document.getElementById('panel-setup');
     if(p){
       p.hidden = false;
@@ -1436,7 +1595,9 @@ function renderAll(){
         + `<div class="hint mono" style="white-space:pre-wrap;">${esc(e && e.stack || '')}</div></div>`;
     }
   }
-})();
+});
 
 })();
 </script>
+</body>
+</html>

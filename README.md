@@ -12,12 +12,29 @@ A web-based scheduling tool for planning Acute Pain Service (APS) and Periop Con
 - Supports manually pinning/locking any week to a specific person (for carryover from a prior block or a manual override); the solver always leaves pinned weeks alone.
 - Exports the schedule and a per-person Requested-vs-Given rollup to `.xlsx`, in a layout close to the MASTER/FINAL sheets used previously.
 
+## Accounts & permissions
+
+Sign-in is email/password via Firebase Authentication (project `aps-cps-scheduler`). Two roles:
+
+- **Admin** — can change the rotation window, holidays, and solver settings (Setup tab); add, edit, or remove anyone on the roster; generate the schedule and pin/lock individual weeks. Admins are listed by email in the `admins` collection in Firestore. The account at `statzern@gmail.com` self-provisions as the first admin on its first sign-in (see the bootstrap rule in `firestore.rules`); every admin after that is added by an existing admin, either from the console or (not yet built) an in-app admin-management screen.
+- **Staff** — sign in, see the published schedule and report (read-only), and edit only their own roster entry's requested/unavailable weeks and target week counts, under a "My Requests" tab. An admin links a staff account to a roster entry by setting that person's email in their profile; until that's done, the account sees a "not linked yet" message.
+
+Permissions are enforced in `firestore.rules`, not just the UI — the client-side gating is a convenience, the security rules are the real boundary.
+
 ## Running it
 
-This is a single self-contained HTML file (`index.html`) — no build step, no server required. Open it directly in a browser, or serve the repo with GitHub Pages / any static host.
+This is a single self-contained HTML file (`index.html`) — no build step. It needs to be served over HTTP(S) (Firebase Auth doesn't work from a bare `file://` page); either run a static server locally (e.g. `python3 -m http.server` — see `.claude/launch.json`) or use the deployed GitHub Pages site.
 
-It's built to run inside a [Claude Artifact](https://claude.ai) for its data storage and file-save capabilities (`window.claude.use(...)`); outside that environment it falls back to browser `localStorage` for persistence, and file downloads/exports are unavailable.
+## Firebase project setup
+
+The `aps-cps-scheduler` Firebase project backs this app (config is inline in `index.html` — the API key is not secret; access is controlled entirely by `firestore.rules`). One-time setup, already done for this project:
+
+1. Firestore database created, rules deployed: `firebase deploy --only firestore:rules`.
+2. A web app registered: `firebase apps:create WEB "APS PCS Scheduler" --project aps-cps-scheduler`.
+3. Firebase Authentication → Email/Password sign-in method enabled in the console. **Note:** as of when this was set up, Google requires the project to be on the Blaze (pay-as-you-go) plan before Authentication can be initialized at all, even though normal usage at this scale stays within the always-free tier.
 
 ## Structure
 
 - `index.html` — the entire application (markup, styles, and logic in one file).
+- `firestore.rules` / `firestore.indexes.json` / `firebase.json` / `.firebaserc` — Firestore configuration and security rules for the `aps-cps-scheduler` Firebase project.
+- `.claude/launch.json` — local static-server config for previewing the app.

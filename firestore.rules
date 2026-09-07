@@ -1,0 +1,65 @@
+rules_version = '2';
+
+// Admin/user model for the APS/PCS scheduler.
+//
+// - admins/{email}: existence of this doc means that email is an admin.
+//   Bootstrap: the hardcoded OWNER email may create (never overwrite) its
+//   OWN admin doc the first time it signs in, so the very first admin can
+//   self-provision with no manual Firestore edit. Every admin after that is
+//   added by an existing admin (from the app, or directly in the console).
+// - config/*, schedule/*: admin-only writes (rotation window, holidays,
+//   solver weights, generated schedule, manual locks). Everyone signed in
+//   can read them.
+// - people/{id}: an admin can create/delete/update any person. A signed-in
+//   user whose email matches a person doc's `email` field may update ONLY
+//   that document, and only its `blockStatus` and `targetWeeks` fields —
+//   their own week requests and target counts. Name, services, and the
+//   restrict-to-requested flag stay admin-only.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function myEmail() { return request.auth.token.email.lower(); }
+    function isAdmin() {
+      return signedIn() &&
+        exists(/databases/$(database)/documents/admins/$(myEmail()));
+    }
+
+    // The one email allowed to self-bootstrap as the first admin.
+    // Change this (and redeploy rules) if the owning account ever changes.
+    function isBootstrapOwner(email) {
+      return email == 'statzern@gmail.com';
+    }
+
+    match /admins/{email} {
+      allow read: if signedIn();
+      allow create: if signedIn()
+        && myEmail() == email
+        && isBootstrapOwner(email)
+        && !exists(/databases/$(database)/documents/admins/$(email));
+      allow update, delete: if isAdmin();
+    }
+
+    match /config/{doc} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /schedule/{doc} {
+      allow read: if signedIn();
+      allow write: if isAdmin();
+    }
+
+    match /people/{personId} {
+      allow read: if signedIn();
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin() || (
+        signedIn() &&
+        resource.data.email is string &&
+        resource.data.email.lower() == myEmail() &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['blockStatus', 'targetWeeks'])
+      );
+    }
+  }
+}
