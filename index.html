@@ -1,0 +1,1442 @@
+<title>Pain &amp; Periop Scheduler</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#F6F7F5; --surface:#FFFFFF; --surface-2:#EEF1EE;
+  --ink:#1B231F; --ink-soft:#5B655F; --ink-faint:#8B948E;
+  --line:#DCE1DC; --line-strong:#C3CAC3;
+  --aps:#0E6E63; --aps-soft:#E3F1EE;
+  --pcs:#A6631E; --pcs-soft:#F5EADA;
+  --accent:#0E6E63; --accent-ink:#FFFFFF;
+  --good:#2F7D4F; --good-soft:#E4F3E9;
+  --warn:#B8862E; --warn-soft:#F7EEDC;
+  --bad:#B23B3B; --bad-soft:#F8E6E6;
+  --shadow: 0 1px 2px rgba(20,30,25,.06), 0 4px 14px rgba(20,30,25,.05);
+  --backdrop: rgba(20,30,25,.45);
+  --radius: 10px;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#10130F; --surface:#181D18; --surface-2:#1F251F;
+    --ink:#E7EBE6; --ink-soft:#A9B2A7; --ink-faint:#71796F;
+    --line:#2A302A; --line-strong:#3A423A;
+    --aps:#4FD3C4; --aps-soft:#16302C;
+    --pcs:#E3A459; --pcs-soft:#3A2A14;
+    --accent:#4FD3C4; --accent-ink:#0B1210;
+    --good:#6FCB93; --good-soft:#16301F;
+    --warn:#E3C06B; --warn-soft:#362B14;
+    --bad:#E28080; --bad-soft:#3A1717;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+    --backdrop: rgba(0,0,0,.6);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#10130F; --surface:#181D18; --surface-2:#1F251F;
+  --ink:#E7EBE6; --ink-soft:#A9B2A7; --ink-faint:#71796F;
+  --line:#2A302A; --line-strong:#3A423A;
+  --aps:#4FD3C4; --aps-soft:#16302C;
+  --pcs:#E3A459; --pcs-soft:#3A2A14;
+  --accent:#4FD3C4; --accent-ink:#0B1210;
+  --good:#6FCB93; --good-soft:#16301F;
+  --warn:#E3C06B; --warn-soft:#362B14;
+  --bad:#E28080; --bad-soft:#3A1717;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 4px 14px rgba(0,0,0,.25);
+  --backdrop: rgba(0,0,0,.6);
+}
+*{box-sizing:border-box;}
+body{ background:var(--bg); color:var(--ink); font-family:'IBM Plex Sans',system-ui,sans-serif; }
+h1,h2,h3{ font-family:'Fraunces',Georgia,serif; font-weight:600; text-wrap:balance; margin:0; color:var(--ink); }
+.mono{ font-family:'IBM Plex Mono',ui-monospace,monospace; font-variant-numeric:tabular-nums; }
+button, input, select, textarea{ font-family:inherit; color:inherit; }
+::selection{ background:var(--aps-soft); }
+a{ color:var(--accent); }
+
+.app{ max-width:1180px; margin:0 auto; padding:28px 24px 64px; }
+
+.topbar{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; flex-wrap:wrap; margin-bottom:6px; }
+.brand{ display:flex; align-items:baseline; gap:10px; }
+.brand h1{ font-size:26px; letter-spacing:-0.01em; }
+.brand .sub{ color:var(--ink-soft); font-size:13px; }
+.sync-status{ display:flex; align-items:center; gap:6px; font-size:12px; color:var(--ink-faint); }
+.dot{ width:7px; height:7px; border-radius:50%; background:var(--good); flex:none; }
+.dot.local{ background:var(--warn); }
+
+.tabs{ display:flex; gap:2px; margin:22px 0 20px; border-bottom:1px solid var(--line); }
+.tab{ appearance:none; background:none; border:none; padding:10px 16px; font-size:14px; font-weight:500; color:var(--ink-soft); cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; transition:color .15s; }
+.tab:hover{ color:var(--ink); }
+.tab.active{ color:var(--accent); border-bottom-color:var(--accent); }
+.tab .count{ font-family:'IBM Plex Mono',monospace; font-size:11px; color:var(--ink-faint); margin-left:5px; }
+
+.panel[hidden]{ display:none!important; }
+
+.card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:20px; box-shadow:var(--shadow); }
+.card + .card{ margin-top:16px; }
+.card h2{ font-size:18px; margin-bottom:4px; }
+.card .desc{ color:var(--ink-soft); font-size:13px; margin-bottom:16px; max-width:64ch; }
+
+.grid-2{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; }
+.grid-3{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:16px; }
+@media(max-width:720px){ .grid-2,.grid-3{ grid-template-columns:1fr; } }
+
+.field{ display:flex; flex-direction:column; gap:6px; }
+.field label{ font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); }
+.field .hint{ font-size:12px; color:var(--ink-faint); }
+.input, .select{ background:var(--bg); border:1px solid var(--line-strong); border-radius:7px; padding:9px 11px; font-size:14px; color:var(--ink); }
+.input:focus, .select:focus, button:focus-visible, .seg-btn:focus-visible{ outline:2px solid var(--accent); outline-offset:1px; }
+.input[type="number"]{ font-family:'IBM Plex Mono',monospace; }
+
+.row{ display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.row.between{ justify-content:space-between; }
+.row.gap-8{ gap:8px; }
+
+.btn{ appearance:none; border:1px solid var(--line-strong); background:var(--surface); color:var(--ink); padding:9px 15px; border-radius:7px; font-size:13.5px; font-weight:500; cursor:pointer; transition:border-color .15s, background .15s; }
+.btn:hover{ border-color:var(--ink-faint); }
+.btn-primary{ background:var(--accent); border-color:var(--accent); color:var(--accent-ink); }
+.btn-primary:hover{ filter:brightness(1.06); border-color:var(--accent); }
+.btn-primary:disabled{ opacity:.45; cursor:not-allowed; }
+.btn-ghost{ background:none; border-color:transparent; color:var(--ink-soft); }
+.btn-ghost:hover{ color:var(--ink); background:var(--surface-2); }
+.btn-danger{ color:var(--bad); border-color:var(--bad-soft); }
+.btn-danger:hover{ background:var(--bad-soft); }
+.btn-sm{ padding:5px 10px; font-size:12.5px; border-radius:6px; }
+
+.badge{ display:inline-flex; align-items:center; gap:5px; font-size:11.5px; font-weight:600; padding:3px 8px; border-radius:20px; letter-spacing:.02em; }
+.badge-aps{ background:var(--aps-soft); color:var(--aps); }
+.badge-pcs{ background:var(--pcs-soft); color:var(--pcs); }
+.badge-dot{ width:6px; height:6px; border-radius:50%; background:currentColor; }
+
+.pill{ font-size:11.5px; font-weight:600; padding:3px 9px; border-radius:20px; }
+.pill-good{ background:var(--good-soft); color:var(--good); }
+.pill-warn{ background:var(--warn-soft); color:var(--warn); }
+.pill-bad{ background:var(--bad-soft); color:var(--bad); }
+.pill-neutral{ background:var(--surface-2); color:var(--ink-soft); }
+
+.stat-grid{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
+@media(max-width:720px){ .stat-grid{ grid-template-columns:repeat(2,minmax(0,1fr)); } }
+.stat{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:14px 16px; }
+.stat .num{ font-family:'IBM Plex Mono',monospace; font-size:26px; font-weight:500; line-height:1.1; }
+.stat .lbl{ font-size:12px; color:var(--ink-soft); margin-top:4px; }
+
+table{ width:100%; border-collapse:collapse; font-size:13.5px; }
+th{ text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-faint); font-weight:600; padding:8px 10px; border-bottom:1px solid var(--line); }
+td{ padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+tr:last-child td{ border-bottom:none; }
+.table-wrap{ overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius); background:var(--surface); }
+.table-wrap table{ min-width:560px; }
+tr.unfilled td{ background:var(--bad-soft); }
+tr.hoverable:hover td{ background:var(--surface-2); }
+
+.people-list{ display:flex; flex-direction:column; gap:10px; }
+.person-card{ display:flex; align-items:center; justify-content:space-between; gap:14px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:13px 16px; }
+.person-card .name{ font-weight:600; font-size:14.5px; }
+.person-card .meta{ display:flex; gap:8px; align-items:center; margin-top:5px; flex-wrap:wrap; }
+.person-card .meta span.small{ font-size:12px; color:var(--ink-soft); }
+
+.editor{ margin-top:16px; border-top:1px dashed var(--line-strong); padding-top:16px; }
+
+.modal-overlay{ position:fixed; inset:0; background:var(--backdrop); display:flex; align-items:flex-start; justify-content:center; padding:5vh 20px; z-index:200; overflow-y:auto; }
+.modal-overlay[hidden]{ display:none!important; }
+.modal-dialog{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); max-width:660px; width:100%; padding:24px; margin-bottom:5vh; }
+@media(max-width:720px){ .modal-overlay{ padding:0; align-items:stretch; } .modal-dialog{ max-width:none; border-radius:0; min-height:100%; margin-bottom:0; } }
+.month-group{ margin-bottom:14px; }
+.month-header{ font-size:12px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.05em; padding:8px 4px 6px; position:sticky; top:0; background:var(--surface); }
+.block-list{ max-height:420px; overflow-y:auto; border:1px solid var(--line); border-radius:9px; background:var(--bg); padding:4px 10px; }
+.block-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 4px; border-bottom:1px solid var(--line); }
+.block-row:last-child{ border-bottom:none; }
+.block-row .dates{ font-size:13px; }
+.block-row .dates .pc{ color:var(--ink-faint); font-size:11.5px; display:block; margin-top:1px; }
+
+.segmented{ display:inline-flex; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; flex:none; }
+.seg-btn{ appearance:none; border:none; background:var(--surface); color:var(--ink-soft); padding:6px 10px; font-size:12px; font-weight:500; cursor:pointer; border-left:1px solid var(--line-strong); }
+.seg-btn:first-child{ border-left:none; }
+.seg-btn.active[data-v="requested"]{ background:var(--aps-soft); color:var(--aps); }
+.seg-btn.active[data-v="unavailable"]{ background:var(--bad-soft); color:var(--bad); }
+.seg-btn.active[data-v="neutral"]{ background:var(--surface-2); color:var(--ink); }
+
+.checkbox-row{ display:flex; align-items:center; gap:7px; font-size:13.5px; }
+.checkbox-row input{ width:15px; height:15px; accent-color:var(--accent); }
+
+.empty-state{ text-align:center; padding:40px 20px; color:var(--ink-faint); font-size:13.5px; }
+.empty-state strong{ color:var(--ink-soft); display:block; margin-bottom:4px; font-size:14px;}
+
+.chip-row{ display:flex; flex-wrap:wrap; gap:5px; }
+.chip{ font-size:11px; padding:2px 7px; border-radius:5px; background:var(--surface-2); color:var(--ink-soft); font-family:'IBM Plex Mono',monospace; }
+
+.toast{ position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 18px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); z-index:50; opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
+.toast.show{ opacity:1; transform:translateX(-50%) translateY(-4px); }
+
+details.advanced summary{ cursor:pointer; font-size:13px; font-weight:600; color:var(--ink-soft); padding:4px 0; }
+details.advanced[open] summary{ margin-bottom:10px; }
+
+.footer-note{ margin-top:30px; font-size:12px; color:var(--ink-faint); text-align:center; }
+@media (prefers-reduced-motion: reduce){ *{ transition:none!important; } }
+</style>
+
+<div class="app">
+  <div class="topbar">
+    <div class="brand">
+      <h1>Pain &amp; Periop Scheduler</h1>
+      <span class="sub">APS &amp; PCS rotation planning</span>
+    </div>
+    <div class="sync-status" id="syncStatus"><span class="dot" id="syncDot"></span><span id="syncLabel">Loading…</span></div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" data-tab="setup" role="tab">Setup</button>
+    <button class="tab" data-tab="roster" role="tab">Roster &amp; Requests <span class="count" id="rosterCount"></span></button>
+    <button class="tab" data-tab="schedule" role="tab">Schedule</button>
+    <button class="tab" data-tab="report" role="tab">Report</button>
+  </div>
+
+  <div id="panel-setup" class="panel"></div>
+  <div id="panel-roster" class="panel" hidden></div>
+  <div id="panel-schedule" class="panel" hidden></div>
+  <div id="panel-report" class="panel" hidden></div>
+
+  <div class="footer-note" id="footerNote"></div>
+</div>
+
+<div class="modal-overlay" id="personModalOverlay" hidden>
+  <div class="modal-dialog" id="personModalDialog" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------------------------------------------------------------------
+   DATE HELPERS  (all local-calendar dates, no timezone math)
+--------------------------------------------------------------------- */
+function ymd(y,m,d){ return new Date(y,m,d); }
+function parseDateInput(str){ if(!str) return null; const [y,m,d]=str.split('-').map(Number); return ymd(y,m-1,d); }
+function addDays(date,n){ return ymd(date.getFullYear(),date.getMonth(),date.getDate()+n); }
+function isoDate(date){ const y=date.getFullYear(); const m=String(date.getMonth()+1).padStart(2,'0'); const d=String(date.getDate()).padStart(2,'0'); return `${y}-${m}-${d}`; }
+const DOW=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function fmtShort(date){ return `${DOW[date.getDay()]} ${MON[date.getMonth()]} ${date.getDate()}`; }
+function fmtLong(date){ return `${DOW[date.getDay()]}, ${MON[date.getMonth()]} ${date.getDate()}, ${date.getFullYear()}`; }
+function monthKey(date){ return `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`; }
+function monthLabel(date){ return `${MON[date.getMonth()]} ${date.getFullYear()}`; }
+function firstWeekdayOnOrAfter(date,dow){ let d=date; while(d.getDay()!==dow) d=addDays(d,1); return d; }
+function esc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function uid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'id-'+Math.random().toString(36).slice(2)+Date.now()); }
+
+/* ---------------------------------------------------------------------
+   STATE
+--------------------------------------------------------------------- */
+const state = {
+  config: { startDate:null, endDate:null, restDays:7, noBackToBack:true,
+    holidays:[],          // [{date:'YYYY-MM-DD', label:'Christmas'}] — a post-call landing on one shifts forward
+    weights:{ request:15, target:8, unfilled:500 } },
+  people: [],           // {id,name,services:[],targetWeeks,restrictToRequested,blockStatus:{key:'requested'|'unavailable'}}
+  blocks: [],           // derived
+  conflicts: null,      // Map key->Set(key)
+  assignment: {},        // key -> personId|null  (plain object, mirrors persisted form; solver output)
+  locks: {},             // key -> personId — manual pin; solver treats these as fixed and never reassigns them
+  scheduleMeta: null,    // {generatedAt, score}
+  modal: null,           // { mode:'person'|'import', ... } while a modal is open
+  importQueue: [],       // File objects still waiting to be reviewed
+  backend: null,         // 'db' | 'local'
+  db: null
+};
+function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
+
+/* ---------------------------------------------------------------------
+   PERSISTENCE
+--------------------------------------------------------------------- */
+const LOCAL_KEY = 'pps_scheduler_v1';
+
+function localLoad(){
+  try{
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if(!raw) return null;
+    return JSON.parse(raw);
+  }catch(e){ return null; }
+}
+function localSave(){
+  try{
+    localStorage.setItem(LOCAL_KEY, JSON.stringify({
+      config: state.config, people: state.people,
+      assignment: state.assignment, locks: state.locks, scheduleMeta: state.scheduleMeta
+    }));
+  }catch(e){ /* storage unavailable — silently no-op, in-memory state still works */ }
+}
+
+/** Deep-clones data coming out of a (frozen) db snapshot into a fresh,
+ * mutable copy. Falls back to JSON round-tripping if structuredClone isn't
+ * available in this view — our documents are always plain JSON anyway. */
+function cloneData(x){
+  try{ return typeof structuredClone==='function' ? structuredClone(x) : JSON.parse(JSON.stringify(x)); }
+  catch(e){ return JSON.parse(JSON.stringify(x)); }
+}
+function withTimeout(promise, ms, fallbackValue){
+  return new Promise((resolve)=>{
+    let done=false;
+    const t=setTimeout(()=>{ if(!done){ done=true; resolve(fallbackValue); } }, ms);
+    Promise.resolve(promise).then(v=>{ if(!done){ done=true; clearTimeout(t); resolve(v); } }, ()=>{ if(!done){ done=true; clearTimeout(t); resolve(fallbackValue); } });
+  });
+}
+
+async function initPersistence(){
+  let db=null;
+  try{ db = window.claude ? await withTimeout(window.claude.use('db'), 6000, null) : null; }catch(e){ db=null; }
+  state.db = db;
+  state.backend = db ? 'db' : 'local';
+  setSyncStatus();
+
+  if(db){
+    const result = await withTimeout(Promise.all([
+      db.doc('config/settings').get(),
+      db.collection('people').get(),
+      db.doc('schedule/current').get()
+    ]), 8000, null);
+    if(result){
+      try{
+        const [cfgSnap, peopleSnap, schedSnap] = result;
+        if(cfgSnap.exists){ Object.assign(state.config, cloneData(cfgSnap.data())); }
+        state.people = peopleSnap.docs.map(d=>normalizePerson(d.data()));
+        if(schedSnap.exists){ const d=cloneData(schedSnap.data()); state.assignment=d.assignment||{}; state.locks=d.locks||{}; state.scheduleMeta = d.generatedAt?{generatedAt:d.generatedAt, score:d.score}:null; }
+      }catch(e){ toast('Could not load shared data — starting fresh.'); }
+    } else {
+      state.backend = 'local';
+      setSyncStatus();
+      const local = localLoad();
+      if(local){
+        Object.assign(state.config, local.config||{});
+        state.people = (local.people||[]).map(normalizePerson);
+        state.assignment = local.assignment||{};
+        state.locks = local.locks||{};
+        state.scheduleMeta = local.scheduleMeta||null;
+      }
+      toast('Shared storage is taking too long to respond — working locally for now.');
+    }
+  } else {
+    const local = localLoad();
+    if(local){
+      Object.assign(state.config, local.config||{});
+      state.people = (local.people||[]).map(normalizePerson);
+      state.assignment = local.assignment||{};
+      state.scheduleMeta = local.scheduleMeta||null;
+    }
+  }
+  if(!state.config.startDate){
+    const today = new Date();
+    state.config.startDate = isoDate(today);
+    state.config.endDate = isoDate(addDays(today,180));
+  }
+}
+
+/** Database snapshots (and their nested objects/arrays) are frozen by the
+ * platform — always copy OUT of one with a fresh, mutable clone rather than
+ * holding a reference, or the first edit throws "Cannot assign to read only
+ * property". normalizePerson is the one place every person passes through
+ * (db load, local load, import), so it clones defensively here. */
+function toTargetNum(v){ return (v===undefined || v===null || v==='') ? null : Number(v); }
+/** targetWeeks is per service — {APS: number|null, PCS: number|null} — since
+ * someone covering both rotations almost always wants a different count of
+ * each. Migrates the old single-number shape from before this was split:
+ * if they only covered one service that number carries over unambiguously;
+ * if they covered both, it can't be un-mixed, so both start blank and need
+ * re-entry (safer than guessing a split that misrepresents their request). */
+function normalizePerson(p){
+  const services = Array.isArray(p.services) ? [...p.services] : [];
+  let targetWeeks;
+  if(p.targetWeeks && typeof p.targetWeeks==='object'){
+    targetWeeks = { APS: toTargetNum(p.targetWeeks.APS), PCS: toTargetNum(p.targetWeeks.PCS) };
+  } else {
+    const legacy = toTargetNum(p.targetWeeks);
+    targetWeeks = { APS: null, PCS: null };
+    if(legacy!=null && services.length===1) targetWeeks[services[0]] = legacy;
+  }
+  return {
+    id: p.id || uid(),
+    name: p.name || 'Unnamed',
+    services,
+    targetWeeks,
+    restrictToRequested: !!p.restrictToRequested,
+    blockStatus: p.blockStatus ? {...p.blockStatus} : {}
+  };
+}
+
+/** Every write is wrapped in a timeout so a slow or unresponsive shared store
+ * can NEVER hang the caller indefinitely — the local copy is already saved by
+ * the time this runs, so callers should not (and no longer do) await these
+ * before updating the screen. A timeout or failure surfaces as a toast but
+ * never blocks the UI. */
+const PERSIST_TIMEOUT_MS = 8000;
+async function persistConfig(){
+  localSave();
+  if(state.backend==='db'){
+    const TIMED_OUT = Symbol('timeout');
+    try{
+      const r = await withTimeout(state.db.doc('config/settings').set(state.config), PERSIST_TIMEOUT_MS, TIMED_OUT);
+      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
+    }catch(e){ toast('Save failed: '+e.message); }
+  }
+}
+async function persistPerson(p){
+  localSave();
+  if(state.backend==='db'){
+    const TIMED_OUT = Symbol('timeout');
+    try{
+      const r = await withTimeout(state.db.collection('people').doc(p.id).set(p), PERSIST_TIMEOUT_MS, TIMED_OUT);
+      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
+    }catch(e){ toast('Save failed: '+e.message); }
+  }
+}
+async function persistDeletePerson(id){
+  localSave();
+  if(state.backend==='db'){
+    const TIMED_OUT = Symbol('timeout');
+    try{
+      const r = await withTimeout(state.db.collection('people').doc(id).delete(), PERSIST_TIMEOUT_MS, TIMED_OUT);
+      if(r===TIMED_OUT) toast('Shared delete is taking a while — it will keep trying in the background.');
+    }catch(e){ toast('Delete failed: '+e.message); }
+  }
+}
+async function persistSchedule(){
+  localSave();
+  if(state.backend==='db'){
+    const TIMED_OUT = Symbol('timeout');
+    try{
+      const r = await withTimeout(state.db.doc('schedule/current').set({ assignment: state.assignment, locks: state.locks, ...state.scheduleMeta }), PERSIST_TIMEOUT_MS, TIMED_OUT);
+      if(r===TIMED_OUT) toast('Shared save is taking a while — your change is kept locally and will keep trying.');
+    }catch(e){ toast('Save failed: '+e.message); }
+  }
+}
+
+function setSyncStatus(){
+  const dot=document.getElementById('syncDot'), lbl=document.getElementById('syncLabel');
+  if(state.backend==='db'){ dot.classList.remove('local'); lbl.textContent='Synced — shared with your group'; }
+  else{ dot.classList.add('local'); lbl.textContent='Saved to this browser only'; }
+}
+
+/* ---------------------------------------------------------------------
+   BLOCK GENERATION & CONFLICTS
+--------------------------------------------------------------------- */
+function rebuildBlocks(){
+  const start = parseDateInput(state.config.startDate);
+  const end = parseDateInput(state.config.endDate);
+  const blocks=[];
+  if(start && end && end>=start){
+    let d = firstWeekdayOnOrAfter(start,5); // Friday
+    while(d<=end){ blocks.push(makeBlock('APS', d)); d=addDays(d,7); }
+    let d2 = firstWeekdayOnOrAfter(start,6); // Saturday
+    while(d2<=end){ blocks.push(makeBlock('PCS', d2)); d2=addDays(d2,7); }
+  }
+  blocks.sort((a,b)=> a.start-b.start || a.service.localeCompare(b.service));
+  blocks.forEach((b,i)=>b.index=i);
+  state.blocks = blocks;
+  state.conflicts = buildConflicts(blocks, Number(state.config.restDays)||0, !!state.config.noBackToBack);
+}
+/** nth (1-4) occurrence of a weekday (0=Sun..6=Sat) in a given month (0-indexed). */
+function nthWeekdayOfMonth(year,month,weekday,n){
+  let d = ymd(year,month,1), count=0;
+  while(true){ if(d.getDay()===weekday){ count++; if(count===n) return d; } d = addDays(d,1); }
+}
+function lastWeekdayOfMonth(year,month,weekday){
+  let d = ymd(year,month+1,0); // last calendar day of the month
+  while(d.getDay()!==weekday) d = addDays(d,-1);
+  return d;
+}
+function standardHolidaysForYear(year){
+  return [
+    { date: isoDate(ymd(year,0,1)), label:"New Year's Day" },
+    { date: isoDate(nthWeekdayOfMonth(year,0,1,3)), label:'MLK Day' },
+    { date: isoDate(lastWeekdayOfMonth(year,4,1)), label:'Memorial Day' },
+    { date: isoDate(ymd(year,6,4)), label:'July 4th' },
+    { date: isoDate(nthWeekdayOfMonth(year,8,1,1)), label:'Labor Day' },
+    { date: isoDate(nthWeekdayOfMonth(year,10,4,4)), label:'Thanksgiving' },
+    { date: isoDate(ymd(year,11,25)), label:'Christmas' },
+  ];
+}
+/** Adds New Year's, MLK, Memorial Day, July 4th, Labor Day, Thanksgiving, and
+ * Christmas for every year the current Setup date range touches. Returns how
+ * many new dates were added (skips ones already on the list). */
+function addStandardHolidays(){
+  const start = parseDateInput(state.config.startDate), end = parseDateInput(state.config.endDate);
+  if(!start || !end) return 0;
+  const years = new Set();
+  for(let y=start.getFullYear(); y<=end.getFullYear(); y++) years.add(y);
+  let added = 0;
+  for(const y of years){
+    for(const h of standardHolidaysForYear(y)){
+      if(!state.config.holidays.some(x=>x.date===h.date)){ state.config.holidays.push(h); added++; }
+    }
+  }
+  return added;
+}
+function isHoliday(dateStr){ return state.config.holidays.some(h=>h.date===dateStr); }
+function isWeekendOrHoliday(d){ const dow=d.getDay(); return dow===0 || dow===6 || isHoliday(isoDate(d)); }
+/** If a post-call day lands on a weekend or a configured holiday, push it forward
+ * to the next day that is neither — matches the "post-call gets moved" convention
+ * (a holiday Friday moves to the following Monday; a holiday Monday moves to Tuesday). */
+function adjustPostcall(rawPostcall){
+  let d = rawPostcall;
+  while(isWeekendOrHoliday(d)) d = addDays(d,1);
+  return d;
+}
+function makeBlock(service,start){
+  const end = addDays(start,6);
+  const rawPostcall = service==='APS' ? addDays(start,7) : addDays(start,9);
+  const postcall = adjustPostcall(rawPostcall);
+  const postcallShifted = isoDate(postcall)!==isoDate(rawPostcall);
+  let holidayWeek = false;
+  for(let d=start; d<=end; d=addDays(d,1)){ if(isHoliday(isoDate(d))){ holidayWeek=true; break; } }
+  return { key:`${service}-${isoDate(start)}`, service, start, end, rawPostcall, postcall, postcallShifted, holidayWeek };
+}
+function buildConflicts(blocks, restDays, noBackToBack){
+  const map = new Map(blocks.map(b=>[b.key,new Set()]));
+  const byService = { APS:blocks.filter(b=>b.service==='APS'), PCS:blocks.filter(b=>b.service==='PCS') };
+  for(let i=0;i<blocks.length;i++){
+    for(let j=i+1;j<blocks.length;j++){
+      const a=blocks[i], b=blocks[j];
+      const gapDays = (b.start-a.postcall)/86400000;
+      let conflict = gapDays < restDays;
+      if(!conflict && noBackToBack && a.service===b.service){
+        const between = byService[a.service].some(x=>x.start>a.start && x.start<b.start);
+        if(!between) conflict = true;
+      }
+      if(conflict){ map.get(a.key).add(b.key); map.get(b.key).add(a.key); }
+    }
+  }
+  return map;
+}
+
+/* ---------------------------------------------------------------------
+   SOLVER
+--------------------------------------------------------------------- */
+function mulberry32(seed){ return function(){ seed|=0; seed=seed+0x6D2B79F5|0; let t=Math.imul(seed^seed>>>15,1|seed); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+function isEligible(p,b){
+  if(!p.services.includes(b.service)) return false;
+  const st = p.blockStatus[b.key];
+  if(st==='unavailable') return false;
+  if(p.restrictToRequested && st!=='requested') return false;
+  return true;
+}
+function isFeasible(personId,b,personBlocks,conflicts){
+  const mine = personBlocks.get(personId);
+  const conf = conflicts.get(b.key);
+  for(const k of mine) if(conf.has(k)) return false;
+  return true;
+}
+/** Count of a person's assigned blockKeys belonging to one service. Keys are
+ * always formatted "SERVICE-YYYY-MM-DD", so a prefix check is exact. */
+function countForService(keySet, service){
+  let n=0; const prefix = service+'-';
+  for(const k of keySet) if(k.startsWith(prefix)) n++;
+  return n;
+}
+function scoreState(assignment, personBlocks, blocks, people, weights){
+  let score=0;
+  for(const b of blocks) if(!assignment.get(b.key)) score -= weights.unfilled;
+  for(const p of people){
+    const mine = personBlocks.get(p.id);
+    let reqSat=0;
+    for(const k of mine) if(p.blockStatus[k]==='requested') reqSat++;
+    score += reqSat*weights.request;
+    for(const service of p.services){
+      const target = p.targetWeeks[service];
+      if(target!=null) score -= Math.abs(countForService(mine,service)-target)*weights.target;
+    }
+  }
+  return score;
+}
+function cloneAssignState(assignment, personBlocks){
+  const a = new Map(assignment);
+  const pb = new Map(); for(const [k,v] of personBlocks) pb.set(k,new Set(v));
+  return {assignment:a, personBlocks:pb};
+}
+function applyAssign(assignment,personBlocks,b,newP){
+  const old = assignment.get(b.key);
+  if(old) personBlocks.get(old).delete(b.key);
+  assignment.set(b.key, newP);
+  if(newP) personBlocks.get(newP).add(b.key);
+}
+
+/** locks: plain object blockKey->personId. Locked blocks are seeded into the
+ * assignment up front and then never touched by construction or annealing —
+ * they still occupy that person's schedule for conflict-checking purposes. */
+function constructGreedy(blocks, people, conflicts, weights, seed, locks){
+  const rng = mulberry32(seed*7919+13);
+  const assignment = new Map(); const personBlocks = new Map(people.map(p=>[p.id,new Set()]));
+  for(const b of blocks){
+    const lockedId = locks[b.key];
+    if(lockedId && personBlocks.has(lockedId)){ assignment.set(b.key, lockedId); personBlocks.get(lockedId).add(b.key); }
+  }
+  for(const b of blocks){
+    if(assignment.has(b.key)) continue; // locked — already fixed above
+    const cands = people.filter(p=> isEligible(p,b) && isFeasible(p.id,b,personBlocks,conflicts));
+    if(cands.length===0){ assignment.set(b.key,null); continue; }
+    let bestP=null,bestVal=-Infinity;
+    for(const p of cands){
+      let val=0;
+      if(p.blockStatus[b.key]==='requested') val += weights.request;
+      const mine = personBlocks.get(p.id);
+      const target = p.targetWeeks[b.service];
+      const countThisService = countForService(mine, b.service);
+      val += (target!=null ? (target-countThisService) : -countThisService*0.3) * weights.target;
+      val += rng()*0.75;
+      if(val>bestVal){ bestVal=val; bestP=p; }
+    }
+    assignment.set(b.key, bestP.id);
+    personBlocks.get(bestP.id).add(b.key);
+  }
+  return {assignment, personBlocks};
+}
+
+function anneal(state0, blocks, people, conflicts, weights, iterations, seed, locks){
+  const rng = mulberry32(seed*104729+7);
+  let {assignment, personBlocks} = state0;
+  let current = scoreState(assignment, personBlocks, blocks, people, weights);
+  let best = cloneAssignState(assignment,personBlocks); let bestScore = current;
+  const T0=12, T1=0.03;
+  const freeBlocks = blocks.filter(b=>!locks[b.key]);
+  const unfilledKeys = ()=> freeBlocks.filter(b=>!assignment.get(b.key));
+  if(freeBlocks.length===0) return best; // everything is locked — nothing for the solver to do
+  for(let i=0;i<iterations;i++){
+    const T = T0*Math.pow(T1/T0, i/Math.max(1,iterations-1));
+    const uf = unfilledKeys();
+    const b = (uf.length && rng()<0.45) ? uf[Math.floor(rng()*uf.length)] : freeBlocks[Math.floor(rng()*freeBlocks.length)];
+    if(rng()<0.6){
+      // reassign move
+      const oldP = assignment.get(b.key);
+      applyAssign(assignment,personBlocks,b,null);
+      const cands = people.filter(p=> p.id!==oldP && isEligible(p,b) && isFeasible(p.id,b,personBlocks,conflicts));
+      const pool = cands.slice(); if(oldP===null) pool.push(null);
+      if(pool.length===0){ applyAssign(assignment,personBlocks,b,oldP); continue; }
+      const newP = pool[Math.floor(rng()*pool.length)];
+      applyAssign(assignment,personBlocks,b,newP);
+      const ns = scoreState(assignment, personBlocks, blocks, people, weights);
+      const delta = ns-current;
+      if(delta>=0 || rng()<Math.exp(delta/T)){ current=ns; if(ns>bestScore){bestScore=ns; best=cloneAssignState(assignment,personBlocks);} }
+      else{ applyAssign(assignment,personBlocks,b,oldP); }
+    } else {
+      // swap move — only between two free (unlocked) blocks
+      const assignedBlocks = freeBlocks.filter(x=>assignment.get(x.key));
+      if(assignedBlocks.length<2) continue;
+      const b1 = assignedBlocks[Math.floor(rng()*assignedBlocks.length)];
+      const b2 = assignedBlocks[Math.floor(rng()*assignedBlocks.length)];
+      if(b1.key===b2.key) continue;
+      const p1=assignment.get(b1.key), p2=assignment.get(b2.key);
+      if(p1===p2) continue;
+      applyAssign(assignment,personBlocks,b1,null); applyAssign(assignment,personBlocks,b2,null);
+      const p1obj=people.find(p=>p.id===p1), p2obj=people.find(p=>p.id===p2);
+      const ok1 = isEligible(p1obj,b2) && isFeasible(p1,b2,personBlocks,conflicts);
+      const ok2 = isEligible(p2obj,b1) && isFeasible(p2,b1,personBlocks,conflicts);
+      if(!ok1 || !ok2){ applyAssign(assignment,personBlocks,b1,p1); applyAssign(assignment,personBlocks,b2,p2); continue; }
+      applyAssign(assignment,personBlocks,b1,p2); applyAssign(assignment,personBlocks,b2,p1);
+      const ns = scoreState(assignment, personBlocks, blocks, people, weights);
+      const delta = ns-current;
+      if(delta>=0 || rng()<Math.exp(delta/T)){ current=ns; if(ns>bestScore){bestScore=ns; best=cloneAssignState(assignment,personBlocks);} }
+      else{ applyAssign(assignment,personBlocks,b1,p1); applyAssign(assignment,personBlocks,b2,p2); }
+    }
+  }
+  return best;
+}
+
+function runSolver(){
+  const blocks = state.blocks, people = state.people, conflicts = state.conflicts;
+  const weights = state.config.weights;
+  const locks = state.locks;
+  if(blocks.length===0 || people.length===0) return null;
+  const iterations = Math.min(9000, Math.max(1500, blocks.length*people.length*12));
+  let bestOverall=null, bestScore=-Infinity;
+  const restarts = 5;
+  for(let r=0;r<restarts;r++){
+    let s = constructGreedy(blocks, people, conflicts, weights, r+1, locks);
+    s = anneal(s, blocks, people, conflicts, weights, iterations, r+1, locks);
+    const sc = scoreState(s.assignment, s.personBlocks, blocks, people, weights);
+    if(sc>bestScore){ bestScore=sc; bestOverall=s; }
+  }
+  const assignment = {};
+  for(const b of blocks) assignment[b.key] = bestOverall.assignment.get(b.key) || null;
+  return { assignment, score: bestScore };
+}
+
+function unfilledReason(b){
+  const eligible = state.people.filter(p=>isEligible(p,b));
+  if(eligible.length===0) return 'No one on the roster is eligible for this week (service, availability, or restrict-to-requested).';
+  return 'Everyone eligible already has a conflicting assignment within the rest window.';
+}
+
+/* ---------------------------------------------------------------------
+   RENDERING — SETUP
+--------------------------------------------------------------------- */
+function renderSetup(){
+  const el = document.getElementById('panel-setup');
+  const c = state.config;
+  el.innerHTML = `
+    <div class="card">
+      <h2>Rotation window</h2>
+      <div class="desc">APS runs Friday–Thursday with a post-call day the following Friday. PCS runs Saturday–Friday with post-call the following Monday. Blocks are generated for every rotation that starts inside this window.</div>
+      <div class="grid-3">
+        <div class="field"><label for="startDate">Start date</label><input class="input" type="date" id="startDate" value="${c.startDate||''}"></div>
+        <div class="field"><label for="endDate">End date</label><input class="input" type="date" id="endDate" value="${c.endDate||''}"></div>
+        <div class="field"><label for="restDays">Minimum rest (days)</label><input class="input" type="number" id="restDays" min="0" max="60" value="${c.restDays}"><span class="hint">Days required between the end of one assignment's post-call day and the start of the next, for the same person.</span></div>
+      </div>
+      <div class="row" style="margin-top:14px;">
+        <label class="checkbox-row"><input type="checkbox" id="noBackToBack" ${c.noBackToBack?'checked':''}> Never schedule the same person on consecutive weeks of the same service</label>
+      </div>
+      <details class="advanced" style="margin-top:16px;">
+        <summary>Advanced: solver weights</summary>
+        <div class="grid-3">
+          <div class="field"><label for="wRequest">Requested-week bonus</label><input class="input" type="number" id="wRequest" value="${c.weights.request}"><span class="hint">Higher = requests matter more relative to coverage.</span></div>
+          <div class="field"><label for="wTarget">Target-week weight</label><input class="input" type="number" id="wTarget" value="${c.weights.target}"><span class="hint">Higher = deviating from someone's requested total week count costs more.</span></div>
+          <div class="field"><label for="wUnfilled">Unfilled-week penalty</label><input class="input" type="number" id="wUnfilled" value="${c.weights.unfilled}"><span class="hint">Keep this high — coverage should almost always win.</span></div>
+        </div>
+      </details>
+      <div class="row" style="margin-top:16px;">
+        <button class="btn btn-primary" id="btnSaveSetup">Save &amp; rebuild weeks</button>
+        <span class="hint" id="blockCountHint"></span>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Holidays</h2>
+      <div class="desc">When a post-call day lands on one of these dates (or a weekend), it's automatically pushed forward to the next open day — matching how a holiday post-call gets moved by hand today.</div>
+      <div class="row gap-8" style="margin-bottom:12px;">
+        <input class="input" type="date" id="holidayDate" style="max-width:170px;">
+        <input class="input" type="text" id="holidayLabel" placeholder="Label (e.g. Christmas)" style="max-width:220px;">
+        <button class="btn" id="btnAddHoliday">Add holiday</button>
+        <button class="btn btn-ghost" id="btnStandardHolidays">Add New Year's, MLK, Memorial Day, July 4th, Labor Day, Thanksgiving &amp; Christmas for this range</button>
+      </div>
+      ${c.holidays.length===0 ? '<div class="hint">No holidays added yet.</div>' : `
+      <div class="chip-row">
+        ${c.holidays.slice().sort((a,b)=>a.date.localeCompare(b.date)).map(h=>`<span class="chip" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">${h.date}${h.label?' · '+esc(h.label):''} <button class="btn-ghost" data-rm-holiday="${h.date}" style="border:none;background:none;cursor:pointer;color:var(--bad);font-family:inherit;">✕</button></span>`).join('')}
+      </div>`}
+    </div>
+    <div class="card" id="blocksPreviewCard"></div>
+  `;
+  document.getElementById('btnAddHoliday').onclick = ()=>{
+    try{
+      const dateEl = document.getElementById('holidayDate'), labelEl = document.getElementById('holidayLabel');
+      if(!dateEl.value){ toast('Pick a date first.'); return; }
+      if(state.config.holidays.some(h=>h.date===dateEl.value)){ toast('That date is already on the list.'); return; }
+      state.config.holidays.push({ date: dateEl.value, label: labelEl.value.trim() });
+      rebuildBlocks();
+      renderSetup();
+      toast('Holiday added.');
+      persistConfig(); // saves in the background; never blocks the UI
+    }catch(e){ toast('Something went wrong adding that holiday: '+e.message); console.error(e); }
+  };
+  const btnStdHolidays = document.getElementById('btnStandardHolidays');
+  if(btnStdHolidays) btnStdHolidays.onclick = ()=>{
+    try{
+      const added = addStandardHolidays();
+      rebuildBlocks();
+      renderSetup();
+      toast(added>0 ? `Added ${added} standard holiday date(s).` : 'Standard holidays for this date range are already on the list.');
+      persistConfig();
+    }catch(e){ toast('Something went wrong adding standard holidays: '+e.message); console.error(e); }
+  };
+  document.querySelectorAll('[data-rm-holiday]').forEach(btn=> btn.onclick = ()=>{
+    try{
+      state.config.holidays = state.config.holidays.filter(h=>h.date!==btn.dataset.rmHoliday);
+      rebuildBlocks();
+      renderSetup();
+      persistConfig();
+    }catch(e){ toast('Something went wrong removing that holiday: '+e.message); console.error(e); }
+  });
+  document.getElementById('btnSaveSetup').onclick = ()=>{
+    try{
+      state.config.startDate = document.getElementById('startDate').value;
+      state.config.endDate = document.getElementById('endDate').value;
+      state.config.restDays = Number(document.getElementById('restDays').value)||0;
+      state.config.noBackToBack = document.getElementById('noBackToBack').checked;
+      state.config.weights.request = Number(document.getElementById('wRequest').value)||0;
+      state.config.weights.target = Number(document.getElementById('wTarget').value)||0;
+      state.config.weights.unfilled = Number(document.getElementById('wUnfilled').value)||0;
+      if(!state.config.startDate || !state.config.endDate || parseDateInput(state.config.endDate) < parseDateInput(state.config.startDate)){
+        toast('Please choose a valid start and end date.'); return;
+      }
+      rebuildBlocks();
+      renderAll();
+      toast('Rotation window saved.');
+      persistConfig(); // saves in the background; never blocks the UI
+    }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
+  };
+  renderBlocksPreview();
+}
+function renderBlocksPreview(){
+  const card = document.getElementById('blocksPreviewCard');
+  if(!card) return;
+  const hint = document.getElementById('blockCountHint');
+  const apsCount = state.blocks.filter(b=>b.service==='APS').length;
+  const pcsCount = state.blocks.filter(b=>b.service==='PCS').length;
+  if(hint) hint.textContent = state.blocks.length ? `${apsCount} APS weeks, ${pcsCount} PCS weeks generated.` : 'No weeks generated yet.';
+  if(state.blocks.length===0){
+    card.innerHTML = `<div class="empty-state"><strong>No weeks yet</strong>Set a date range above and save to generate the rotation calendar.</div>`;
+    return;
+  }
+  const groups = groupByMonth(state.blocks);
+  card.innerHTML = `<h2 style="margin-bottom:12px;">Generated weeks</h2>` + groups.map(g=>`
+    <div class="month-group">
+      <div class="month-header">${g.label}</div>
+      <div class="block-list" style="max-height:none;border:none;padding:0;background:none;">
+        ${g.items.map(b=>blockRowHtml(b)).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+function blockRowHtml(b, extra){
+  const pcNote = b.postcallShifted
+    ? ` <span class="pill pill-warn" title="Normally ${fmtShort(b.rawPostcall)} — moved off a weekend/holiday">moved from ${fmtShort(b.rawPostcall)}</span>`
+    : '';
+  return `<div class="block-row">
+    <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
+    <span class="dates" style="flex:1;margin-left:10px;">${fmtShort(b.start)} – ${fmtShort(b.end)}<span class="pc">Post-call ${fmtShort(b.postcall)}${pcNote}</span></span>
+    ${b.holidayWeek?'<span class="pill pill-neutral">Holiday week</span>':''}
+    ${extra||''}
+  </div>`;
+}
+function groupByMonth(blocks){
+  const map = new Map();
+  for(const b of blocks){ const k=monthKey(b.start); if(!map.has(k)) map.set(k,{label:monthLabel(b.start),items:[]}); map.get(k).items.push(b); }
+  return [...map.values()];
+}
+
+/* ---------------------------------------------------------------------
+   RENDERING — ROSTER
+--------------------------------------------------------------------- */
+function renderRoster(){
+  const el = document.getElementById('panel-roster');
+  document.getElementById('rosterCount').textContent = state.people.length ? `(${state.people.length})` : '';
+  el.innerHTML = `
+    <div class="card">
+      <div class="row between">
+        <div><h2>Roster &amp; requests</h2><div class="desc" style="margin-bottom:0;">Add people directly, or import the request spreadsheets people send back — pick one or several at once and review each before it saves.</div></div>
+        <div class="row gap-8">
+          <label class="btn btn-primary" style="cursor:pointer;">Import request file(s)<input type="file" id="fileImportRequests" accept=".xlsx" multiple style="display:none;"></label>
+          <button class="btn btn-primary" id="btnAddPerson">Add person</button>
+        </div>
+      </div>
+      <div class="row gap-8" style="margin-top:12px;">
+        <button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
+        <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>
+      </div>
+    </div>
+    <div class="card" id="peopleListCard"></div>
+  `;
+  document.getElementById('btnAddPerson').onclick = ()=> openPersonModal(null);
+  document.getElementById('btnExportRoster').onclick = exportRosterXlsx;
+  document.getElementById('fileImportBackup').onchange = (e)=>{ if(e.target.files[0]) importRosterBackupXlsx(e.target.files[0]); e.target.value=''; };
+  document.getElementById('fileImportRequests').onchange = (e)=>{ if(e.target.files.length) handleImportRequestFiles(e.target.files); e.target.value=''; };
+  renderPeopleList();
+}
+function renderPeopleList(){
+  const card = document.getElementById('peopleListCard');
+  if(!card) return;
+  if(state.people.length===0){
+    card.innerHTML = `<div class="empty-state"><strong>No one on the roster yet</strong>Add people or import a roster spreadsheet to get started.</div>`;
+    return;
+  }
+  card.innerHTML = `<div class="people-list">${state.people.map(p=>{
+    const svc = p.services.map(s=>`<span class="badge badge-${s.toLowerCase()}"><span class="badge-dot"></span>${s}</span>`).join(' ');
+    const targetBits = p.services.filter(s=>p.targetWeeks[s]!=null).map(s=>`${s} target ${p.targetWeeks[s]} wk`).join(', ');
+    const reqCount = Object.values(p.blockStatus).filter(v=>v==='requested').length;
+    const unavailCount = Object.values(p.blockStatus).filter(v=>v==='unavailable').length;
+    return `<div class="person-card">
+      <div>
+        <div class="name">${esc(p.name)||'<em style=\"color:var(--ink-faint)\">Unnamed</em>'}</div>
+        <div class="meta">${svc}
+          ${targetBits?`<span class="small">${esc(targetBits)}</span>`:''}
+          ${reqCount?`<span class="small">${reqCount} requested</span>`:''}
+          ${unavailCount?`<span class="small">${unavailCount} unavailable</span>`:''}
+          ${p.restrictToRequested?`<span class="pill pill-warn">Requested weeks only</span>`:''}
+        </div>
+      </div>
+      <div class="row gap-8">
+        <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
+        <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+  card.querySelectorAll('[data-edit]').forEach(btn=> btn.onclick = ()=> openPersonModal(state.people.find(x=>x.id===btn.dataset.edit)));
+  card.querySelectorAll('[data-del]').forEach(btn=> btn.onclick = ()=>{
+    const p = state.people.find(x=>x.id===btn.dataset.del);
+    if(!confirm(`Remove ${p.name||'this person'} from the roster?`)) return;
+    state.people = state.people.filter(x=>x.id!==btn.dataset.del);
+    renderPeopleList();
+    persistDeletePerson(btn.dataset.del); // background; never blocks the UI
+  });
+}
+
+/* ---- Person modal: edits happen on a draft copy; nothing touches
+   state.people (or the database) until "Save person" is clicked. ---- */
+function openPersonModal(existingPerson){
+  state.modal = existingPerson
+    ? { mode:'person', isNew:false, id:existingPerson.id, draft: { ...existingPerson, services:[...existingPerson.services], blockStatus:{...existingPerson.blockStatus} } }
+    : { mode:'person', isNew:true, id:uid(), draft: normalizePerson({ id:uid(), name:'', services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }) };
+  document.getElementById('personModalOverlay').hidden = false;
+  document.addEventListener('keydown', onModalKeydown);
+  renderModal();
+}
+function closePersonModal(){
+  state.modal = null;
+  document.getElementById('personModalOverlay').hidden = true;
+  document.removeEventListener('keydown', onModalKeydown);
+}
+function onModalKeydown(e){ if(e.key==='Escape') closePersonModal(); }
+function renderModal(){
+  if(!state.modal) return;
+  if(state.modal.mode==='import') renderImportModal();
+  else renderPersonModal();
+}
+function renderPersonModal(){
+  const dialog = document.getElementById('personModalDialog');
+  const m = state.modal;
+  if(!m) return;
+  const p = m.draft;
+  const relevantBlocks = state.blocks.filter(b=>p.services.includes(b.service));
+  const groups = groupByMonth(relevantBlocks);
+  dialog.innerHTML = `
+    <div class="row between" style="margin-bottom:14px;">
+      <h2>${m.isNew ? 'Add person' : 'Editing '+(esc(p.name)||'person')}</h2>
+      <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
+    </div>
+    <div class="grid-2">
+      <div class="field"><label for="pName">Name</label><input class="input" id="pName" value="${esc(p.name)}" placeholder="Full name"></div>
+      <div class="field"><label>Eligible for</label>
+        <div class="row gap-8" style="padding-top:6px;">
+          <label class="checkbox-row"><input type="checkbox" id="pAPS" ${p.services.includes('APS')?'checked':''}> APS</label>
+          <label class="checkbox-row"><input type="checkbox" id="pPCS" ${p.services.includes('PCS')?'checked':''}> PCS</label>
+        </div>
+      </div>
+    </div>
+    ${p.services.length ? `<div class="grid-2" style="margin-top:12px;">
+      ${p.services.includes('APS')?`<div class="field"><label for="pTargetAPS">APS target weeks (optional)</label><input class="input" type="number" id="pTargetAPS" min="0" value="${p.targetWeeks.APS==null?'':p.targetWeeks.APS}"></div>`:''}
+      ${p.services.includes('PCS')?`<div class="field"><label for="pTargetPCS">PCS target weeks (optional)</label><input class="input" type="number" id="pTargetPCS" min="0" value="${p.targetWeeks.PCS==null?'':p.targetWeeks.PCS}"></div>`:''}
+    </div>` : ''}
+    <div class="row" style="margin-top:12px;">
+      <label class="checkbox-row"><input type="checkbox" id="pRestrict" ${p.restrictToRequested?'checked':''}> Only ever schedule this person on weeks marked "requested" below</label>
+    </div>
+    <div class="editor">
+      <div class="row between" style="margin-bottom:8px;">
+        <strong style="font-size:13px;">Weeks (${relevantBlocks.length})</strong>
+        <span class="hint">Available (default) · Requested · Unavailable</span>
+      </div>
+      ${relevantBlocks.length===0 ? '<div class="empty-state">Check APS and/or PCS above to see weeks here.</div>' : `
+      <div class="block-list">
+        ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
+          const st = p.blockStatus[b.key] || 'neutral';
+          return blockRowHtml(b, `<div class="segmented" data-key="${b.key}">
+            <button class="seg-btn ${st==='neutral'?'active':''}" data-v="neutral">Available</button>
+            <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
+            <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
+          </div>`);
+        }).join('')}`).join('')}
+      </div>`}
+    </div>
+    <div class="row between" style="margin-top:16px;">
+      <button class="btn btn-ghost" id="btnCancelModal">Cancel</button>
+      <button class="btn btn-primary" id="btnSavePerson">Save person</button>
+    </div>
+  `;
+  document.getElementById('btnCloseModal').onclick = closePersonModal;
+  document.getElementById('btnCancelModal').onclick = closePersonModal;
+  // Re-render the weeks list when eligibility checkboxes change, without losing other in-progress field values.
+  const syncDraftFields = ()=>{
+    p.name = document.getElementById('pName').value;
+    // Capture any target value already typed before the checkbox toggle re-renders the fields away.
+    const aEl = document.getElementById('pTargetAPS'), pEl = document.getElementById('pTargetPCS');
+    if(aEl && aEl.value!=='') p.targetWeeks.APS = Number(aEl.value);
+    if(pEl && pEl.value!=='') p.targetWeeks.PCS = Number(pEl.value);
+    p.services = [ ...(document.getElementById('pAPS').checked?['APS']:[]), ...(document.getElementById('pPCS').checked?['PCS']:[]) ];
+  };
+  dialog.querySelector('#pAPS').onchange = ()=>{ syncDraftFields(); renderPersonModal(); };
+  dialog.querySelector('#pPCS').onchange = ()=>{ syncDraftFields(); renderPersonModal(); };
+  dialog.querySelectorAll('.segmented').forEach(seg=>{
+    seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
+      const key = seg.dataset.key, v = btn.dataset.v;
+      if(v==='neutral') delete p.blockStatus[key]; else p.blockStatus[key]=v;
+      seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
+    });
+  });
+  document.getElementById('btnSavePerson').onclick = ()=>{
+    try{
+      p.name = document.getElementById('pName').value.trim() || 'Unnamed';
+      p.services = [ ...(document.getElementById('pAPS').checked?['APS']:[]), ...(document.getElementById('pPCS').checked?['PCS']:[]) ];
+      const aEl = document.getElementById('pTargetAPS'), pEl = document.getElementById('pTargetPCS');
+      p.targetWeeks = {
+        APS: (p.services.includes('APS') && aEl && aEl.value!=='') ? Number(aEl.value) : null,
+        PCS: (p.services.includes('PCS') && pEl && pEl.value!=='') ? Number(pEl.value) : null
+      };
+      p.restrictToRequested = document.getElementById('pRestrict').checked;
+      if(p.restrictToRequested && !Object.values(p.blockStatus).includes('requested')){
+        toast('Note: "requested weeks only" is on but no weeks are marked requested — this person won\'t be scheduled.');
+      }
+      if(m.isNew){ state.people.push(p); }
+      else{ const idx = state.people.findIndex(x=>x.id===m.id); if(idx>=0) state.people[idx]=p; }
+      closePersonModal();
+      renderPeopleList();
+      toast('Person saved.');
+      persistPerson(p); // background; never blocks the UI
+    }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
+  };
+}
+
+/* ---------------------------------------------------------------------
+   IMPORT / EXPORT
+--------------------------------------------------------------------- */
+async function exportRosterXlsx(){
+  if(typeof XLSX==='undefined'){ toast('Spreadsheet library failed to load — try again in a moment.'); return; }
+  const header = ['Name','Services (APS / PCS / APS,PCS)','APS Target Weeks','PCS Target Weeks','Restrict To Requested (Y/N)','Requested Weeks (block keys, separated by ;)','Unavailable Weeks (block keys, separated by ;)'];
+  const rows = [header];
+  for(const p of state.people){
+    const req = Object.entries(p.blockStatus).filter(([,v])=>v==='requested').map(([k])=>k).join('; ');
+    const unavail = Object.entries(p.blockStatus).filter(([,v])=>v==='unavailable').map(([k])=>k).join('; ');
+    rows.push([p.name, p.services.join(','), p.targetWeeks.APS==null?'':p.targetWeeks.APS, p.targetWeeks.PCS==null?'':p.targetWeeks.PCS, p.restrictToRequested?'Y':'N', req, unavail]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:20},{wch:22},{wch:14},{wch:14},{wch:16},{wch:40},{wch:40}];
+  const blockRows = [['Service','Block key (paste into the columns at left)','Start','End','Post-call']];
+  for(const b of state.blocks) blockRows.push([b.service, b.key, fmtLong(b.start), fmtLong(b.end), fmtLong(b.postcall)]);
+  const wsB = XLSX.utils.aoa_to_sheet(blockRows);
+  wsB['!cols'] = [{wch:8},{wch:16},{wch:22},{wch:22},{wch:22}];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'People');
+  XLSX.utils.book_append_sheet(wb, wsB, 'Blocks reference');
+  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  try{
+    const dl = window.claude ? await window.claude.use('downloads') : null;
+    if(dl){ await dl.save({filename:'roster.xlsx', data:blob}); toast('Roster exported.'); }
+    else toast('Downloads aren\'t available in this view.');
+  }catch(e){ if(e && e.code!=='declined') toast('Export failed: '+(e.message||e.code)); }
+}
+function importRosterBackupXlsx(file){
+  const reader = new FileReader();
+  reader.onload = async (e)=>{
+    try{
+      const wb = XLSX.read(e.target.result, {type:'array'});
+      const ws = wb.Sheets['People'];
+      if(!ws){ toast('No "People" sheet found in that file.'); return; }
+      const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:''});
+      const blockKeys = new Set(state.blocks.map(b=>b.key));
+      const imported = []; const errors=[];
+      for(let i=1;i<rows.length;i++){
+        const row = rows[i]; if(!row[0]) continue;
+        const [name, servicesStr, apsTargetStr, pcsTargetStr, restrictStr, reqStr, unavailStr] = row;
+        const services = String(servicesStr||'').split(',').map(s=>s.trim().toUpperCase()).filter(s=>s==='APS'||s==='PCS');
+        const toNum = v => (v===''||v==null||isNaN(Number(v))) ? null : Number(v);
+        const restrict = String(restrictStr||'').trim().toUpperCase()==='Y';
+        const blockStatus = {};
+        const parseList = (str,status)=>{ String(str||'').split(';').map(s=>s.trim()).filter(Boolean).forEach(k=>{
+          if(blockKeys.has(k)) blockStatus[k]=status; else errors.push(`Row ${i+1}: unknown block "${k}"`);
+        }); };
+        parseList(reqStr,'requested'); parseList(unavailStr,'unavailable');
+        imported.push(normalizePerson({ id:uid(), name:String(name).trim(), services, targetWeeks:{APS:toNum(apsTargetStr), PCS:toNum(pcsTargetStr)}, restrictToRequested:restrict, blockStatus }));
+      }
+      if(imported.length===0){ toast('No rows found to import.'); return; }
+      if(!confirm(`Import ${imported.length} people and replace the current roster (${state.people.length} people)?${errors.length?`\n\n${errors.length} warning(s), see console.`:''}`)) return;
+      if(errors.length) console.warn('Import warnings:\n'+errors.join('\n'));
+      const oldIds = state.people.map(p=>p.id);
+      state.people = imported;
+      renderAll();
+      toast(`Imported ${imported.length} people.${errors.length?` ${errors.length} warning(s) — see console.`:''}`);
+      (async ()=>{ // sync to shared storage in the background; never blocks the UI
+        for(const id of oldIds) await persistDeletePerson(id);
+        for(const p of imported) await persistPerson(p);
+      })();
+    }catch(err){ toast('Import failed: '+err.message); }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ---------------------------------------------------------------------
+   IMPORT — real per-person request files (free-text "Yes"/"No"/"vac"/etc.)
+   Every guess is shown to the user for confirmation before anything saves.
+--------------------------------------------------------------------- */
+const KNOWN_FOOTER_LABELS = [/enter your name here/i, /how many weeks/i, /please rank/i, /enter comments/i, /enter amount here/i, /yellow highlighted/i, /green highlighted/i, /enter above in grid/i, /already scheduled/i, /post call will need/i];
+function classifyFreeText(text){
+  const t = (text==null?'':String(text)).trim().toLowerCase();
+  if(!t) return 'neutral';
+  if(/^yes\b/.test(t)) return 'requested';
+  if(/^no\b/.test(t) || /^vac\b/.test(t) || /\bvacation\b/.test(t) || /^teaching\b/.test(t)) return 'unavailable';
+  return 'unclear'; // anything else (e.g. "maybe", an unrecognized reason) — always surfaced for manual review
+}
+function parseRequestWorkbook(wb, filenameGuess){
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  if(!ws) return { error:'That file has no sheets.' };
+  const rows = XLSX.utils.sheet_to_json(ws, {header:1, defval:null});
+  const header = (rows[0]||[]).map(v=>String(v==null?'':v).toLowerCase());
+  let service = null;
+  if(header.some(h=>h.includes('aps start'))) service='APS';
+  else if(header.some(h=>h.includes('pcs start'))) service='PCS';
+  if(!service) return { error:'Could not tell whether this is an APS or PCS request file (no "APS Start Day" / "PCS Start Day" column found).' };
+
+  const weekRows = []; let unmatchedCount = 0;
+  let footerStart = rows.length;
+  for(let i=1;i<rows.length;i++){
+    const row = rows[i]||[];
+    const startCell = row[1];
+    if(startCell instanceof Date){
+      const weekNum = row[0];
+      if(weekNum!=null){ // skip the blank-Week# "already scheduled" reference row
+        const block = state.blocks.find(b=>b.service===service && isoDate(b.start)===isoDate(startCell));
+        const text = row[4]==null ? '' : String(row[4]);
+        if(block) weekRows.push({ block, rawText:text, guess: classifyFreeText(text) });
+        else if(text.trim()) unmatchedCount++;
+      }
+    } else if(i>1 && !(row[1] instanceof Date)) {
+      footerStart = i; break;
+    }
+  }
+  // Name: the lone non-label text cell in the footer area (row ~2 below the week list); else fall back to the filename.
+  let nameFromSheet = null, targetGuess = null;
+  for(let i=footerStart; i<rows.length; i++){
+    const row = rows[i]||[];
+    const nonEmpty = row.map((v,idx)=>({v,idx})).filter(x=>x.v!=null && String(x.v).trim()!=='');
+    const joined = row.map(v=>v==null?'':String(v)).join(' ');
+    if(/how many weeks/i.test(joined) && targetGuess==null){
+      for(const cell of row) if(typeof cell==='number'){ targetGuess = cell; break; }
+    }
+    if(nameFromSheet==null && nonEmpty.length===1){
+      const val = String(nonEmpty[0].v).trim();
+      if(!/^enter your name here$/i.test(val) && !KNOWN_FOOTER_LABELS.some(re=>re.test(val)) && val.length<60 && !/^\d+$/.test(val)) nameFromSheet = val;
+    }
+  }
+  return { service, weekRows, unmatchedCount, nameFromSheet, targetGuess, filenameGuess };
+}
+
+function handleImportRequestFiles(fileList){
+  state.importQueue = Array.from(fileList);
+  processNextImportFile();
+}
+function processNextImportFile(){
+  if(state.importQueue.length===0){ closePersonModal(); renderPeopleList(); return; }
+  const file = state.importQueue.shift();
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    let wb;
+    try{ wb = XLSX.read(e.target.result, {type:'array', cellDates:true}); }
+    catch(err){ toast(`Couldn't read ${file.name}: ${err.message}`); processNextImportFile(); return; }
+    const filenameGuess = file.name.replace(/\.xlsx$/i,'').trim();
+    const parsed = parseRequestWorkbook(wb, filenameGuess);
+    if(parsed.error){ toast(`${file.name}: ${parsed.error}`); processNextImportFile(); return; }
+    const name = parsed.nameFromSheet || parsed.filenameGuess;
+    const existing = state.people.find(p=>p.name.trim().toLowerCase()===name.trim().toLowerCase());
+    state.modal = {
+      mode:'import', filename:file.name, service:parsed.service, unmatchedCount:parsed.unmatchedCount,
+      queueRemaining: state.importQueue.length,
+      name, targetWeeks: parsed.targetGuess!=null?parsed.targetGuess:'',
+      existingId: existing?existing.id:null,
+      rows: parsed.weekRows.map(r=>({ block:r.block, rawText:r.rawText, guess:r.guess, selected: r.guess==='unclear' ? 'neutral' : r.guess }))
+    };
+    document.getElementById('personModalOverlay').hidden = false;
+    document.addEventListener('keydown', onModalKeydown);
+    renderModal();
+  };
+  reader.readAsArrayBuffer(file);
+}
+function renderImportModal(){
+  const dialog = document.getElementById('personModalDialog');
+  const m = state.modal;
+  const groups = groupByMonth(m.rows.map(r=>r.block));
+  const unclearCount = m.rows.filter(r=>r.guess==='unclear').length;
+  dialog.innerHTML = `
+    <div class="row between" style="margin-bottom:6px;">
+      <h2>Import request — ${esc(m.filename)}</h2>
+      <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
+    </div>
+    ${m.queueRemaining>0?`<div class="hint" style="margin-bottom:12px;">${m.queueRemaining} more file(s) queued after this one.</div>`:''}
+    ${m.existingId?`<div class="pill pill-warn" style="margin-bottom:12px;">Matches existing roster entry — this will update them, not create a duplicate</div>`:''}
+    <div class="grid-3">
+      <div class="field"><label for="impName">Name</label><input class="input" id="impName" value="${esc(m.name)}"></div>
+      <div class="field"><label>Service (detected)</label><div style="padding-top:6px;"><span class="badge badge-${m.service.toLowerCase()}"><span class="badge-dot"></span>${m.service}</span></div></div>
+      <div class="field"><label for="impTarget">${m.service} target weeks</label><input class="input" type="number" min="0" id="impTarget" value="${m.targetWeeks}"></div>
+    </div>
+    ${unclearCount ? `<div class="hint" style="margin-top:12px;color:var(--warn);">⚠ ${unclearCount} week(s) had text I couldn't confidently read as yes/no (marked below) — please check them.</div>` : ''}
+    ${m.unmatchedCount ? `<div class="hint" style="margin-top:6px;">${m.unmatchedCount} week(s) in this file fall outside your current Setup date range and were skipped.</div>` : ''}
+    <div class="editor">
+      <div class="row between" style="margin-bottom:8px;">
+        <strong style="font-size:13px;">Weeks (${m.rows.length})</strong>
+        <span class="hint">Raw answer shown at right — click to correct</span>
+      </div>
+      <div class="block-list">
+        ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
+          const r = m.rows.find(x=>x.block.key===b.key);
+          const needsReview = r.guess==='unclear';
+          return `<div class="block-row" style="${needsReview?'background:var(--warn-soft);border-radius:6px;':''}">
+            <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
+            <span class="dates" style="flex:1;margin-left:10px;">${fmtShort(b.start)} – ${fmtShort(b.end)}
+              <span class="pc">${r.rawText?`"${esc(r.rawText)}"`:'<em>(blank)</em>'}${needsReview?' <span class="pill pill-warn">check this</span>':''}</span>
+            </span>
+            <div class="segmented" data-key="${b.key}">
+              <button class="seg-btn ${r.selected==='neutral'?'active':''}" data-v="neutral">Available</button>
+              <button class="seg-btn ${r.selected==='requested'?'active':''}" data-v="requested">Requested</button>
+              <button class="seg-btn ${r.selected==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
+            </div>
+          </div>`;
+        }).join('')}`).join('')}
+      </div>
+    </div>
+    <div class="row between" style="margin-top:16px;">
+      <button class="btn btn-ghost" id="btnSkipFile">Skip this file</button>
+      <button class="btn btn-primary" id="btnSaveImport">${m.existingId?'Update person':'Add to roster'}${m.queueRemaining>0?' & next':''}</button>
+    </div>
+  `;
+  document.getElementById('btnCloseModal').onclick = closePersonModal;
+  document.getElementById('btnSkipFile').onclick = ()=> processNextImportFile();
+  dialog.querySelectorAll('.segmented').forEach(seg=>{
+    seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
+      const key = seg.dataset.key, v = btn.dataset.v;
+      m.rows.find(r=>r.block.key===key).selected = v;
+      seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
+    });
+  });
+  document.getElementById('btnSaveImport').onclick = ()=>{
+    try{
+      const name = document.getElementById('impName').value.trim() || m.filename.replace(/\.xlsx$/i,'') || 'Unnamed';
+      const targetVal = document.getElementById('impTarget').value;
+      const targetWeeks = targetVal===''? null : Number(targetVal);
+      let person = m.existingId ? state.people.find(p=>p.id===m.existingId) : null;
+      if(!person){ person = normalizePerson({ id:uid(), name, services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }); state.people.push(person); }
+      person.name = name;
+      if(!person.services.includes(m.service)) person.services = [...person.services, m.service];
+      if(targetWeeks!=null) person.targetWeeks[m.service] = targetWeeks; // this file's target is specific to its own service
+      for(const r of m.rows){
+        if(r.selected==='neutral') delete person.blockStatus[r.block.key];
+        else person.blockStatus[r.block.key] = r.selected;
+      }
+      toast(`Saved ${name}.`);
+      persistPerson(person); // background; never blocks moving to the next file
+      processNextImportFile();
+    }catch(e){ toast('Something went wrong saving this import: '+e.message); console.error(e); }
+  };
+}
+async function exportScheduleXlsx(){
+  if(typeof XLSX==='undefined'){ toast('Spreadsheet library failed to load.'); return; }
+  const rows = [['Service','Week #','Start','End','Post-call','Holiday','Assigned to','Wanted (Yes)','Declined (No)']];
+  let weekNum = {APS:0, PCS:0};
+  for(const b of state.blocks){
+    weekNum[b.service]++;
+    const pid = effectiveAssignment(b.key);
+    const p = pid ? state.people.find(x=>x.id===pid) : null;
+    rows.push([b.service, weekNum[b.service], fmtLong(b.start), fmtLong(b.end), fmtLong(b.postcall)+(b.postcallShifted?` (moved from ${fmtLong(b.rawPostcall)})`:''),
+      b.holidayWeek?'HOLIDAY':'', p ? p.name+(state.locks[b.key]?' (pinned)':'') : 'UNFILLED', namesWithStatus(b,'requested'), namesWithStatus(b,'unavailable')]);
+  }
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [{wch:8},{wch:7},{wch:20},{wch:20},{wch:26},{wch:10},{wch:22},{wch:30},{wch:30}];
+
+  const rollup = [['Name','APS Requested','APS Given','APS Target','PCS Requested','PCS Given','PCS Target']];
+  for(const p of state.people){
+    const cell = service => {
+      if(!p.services.includes(service)) return ['','',''];
+      const assignedThis = state.blocks.filter(b=>b.service===service && effectiveAssignment(b.key)===p.id);
+      const reqTotal = Object.entries(p.blockStatus).filter(([k,v])=>v==='requested' && k.startsWith(service+'-')).length;
+      return [reqTotal, assignedThis.length, p.targetWeeks[service]==null?'':p.targetWeeks[service]];
+    };
+    rollup.push([p.name, ...cell('APS'), ...cell('PCS')]);
+  }
+  const wsRollup = XLSX.utils.aoa_to_sheet(rollup);
+  wsRollup['!cols'] = [{wch:20},{wch:13},{wch:10},{wch:11},{wch:13},{wch:10},{wch:11}];
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
+  XLSX.utils.book_append_sheet(wb, wsRollup, 'Requested vs Given');
+  const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
+  const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+  try{
+    const dl = window.claude ? await window.claude.use('downloads') : null;
+    if(dl){ await dl.save({filename:'schedule.xlsx', data:blob}); toast('Schedule exported.'); }
+    else toast('Downloads aren\'t available in this view.');
+  }catch(e){ if(e && e.code!=='declined') toast('Export failed: '+(e.message||e.code)); }
+}
+
+/* ---------------------------------------------------------------------
+   RENDERING — SCHEDULE
+--------------------------------------------------------------------- */
+function renderSchedule(){
+  const el = document.getElementById('panel-schedule');
+  const canGenerate = state.blocks.length>0 && state.people.length>0;
+  const filled = state.blocks.filter(b=>effectiveAssignment(b.key)).length;
+  const lockCount = Object.keys(state.locks).length;
+  el.innerHTML = `
+    <div class="card">
+      <div class="row between">
+        <div><h2>Schedule</h2><div class="desc" style="margin-bottom:0;">Runs a search over every valid combination to maximize satisfied requests and target weeks while keeping every week covered. Pin a specific week yourself using the "Assigned to" dropdown below — the solver will always leave a pinned week alone and fill in the rest around it.</div></div>
+        <div class="row gap-8">
+          <button class="btn" id="btnExportSchedule" ${state.blocks.length===0?'disabled':''}>Export (.xlsx)</button>
+          <button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>
+        </div>
+      </div>
+      ${!canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
+    </div>
+    ${state.blocks.length>0 ? `
+    <div class="stat-grid" style="margin-top:16px;">
+      <div class="stat"><div class="num mono">${state.blocks.length}</div><div class="lbl">Total weeks</div></div>
+      <div class="stat"><div class="num mono" style="color:${filled===state.blocks.length?'var(--good)':'var(--bad)'}">${filled}/${state.blocks.length}</div><div class="lbl">Filled</div></div>
+      <div class="stat"><div class="num mono">${countRequestsSatisfied()}/${countRequestsTotal()}</div><div class="lbl">Requests honored</div></div>
+      <div class="stat"><div class="num mono">${lockCount||'—'}</div><div class="lbl">Weeks pinned by hand</div></div>
+    </div>` : ''}
+    <div class="card" id="scheduleTableCard" style="margin-top:16px;"></div>
+  `;
+  document.getElementById('btnGenerate').onclick = async ()=>{
+    document.getElementById('btnGenerate').textContent='Generating…'; document.getElementById('btnGenerate').disabled=true;
+    await new Promise(r=>setTimeout(r,20)); // let the button repaint before the sync solve
+    const result = runSolver();
+    if(result){
+      state.assignment = result.assignment;
+      state.scheduleMeta = { generatedAt: new Date().toISOString(), score: result.score };
+      toast('Schedule generated.');
+      persistSchedule(); // background; never blocks the UI
+    }
+    renderSchedule();
+  };
+  const exportBtn = document.getElementById('btnExportSchedule');
+  if(exportBtn) exportBtn.onclick = exportScheduleXlsx;
+  renderScheduleTable();
+}
+function countRequestsTotal(){ let n=0; for(const p of state.people) n += Object.values(p.blockStatus).filter(v=>v==='requested').length; return n; }
+function countRequestsSatisfied(){
+  let n=0;
+  for(const b of state.blocks){
+    const pid = effectiveAssignment(b.key); if(!pid) continue;
+    const p = state.people.find(x=>x.id===pid);
+    if(p && p.blockStatus[b.key]==='requested') n++;
+  }
+  return n;
+}
+function namesWithStatus(b, status){
+  return state.people.filter(p=>p.services.includes(b.service) && p.blockStatus[b.key]===status).map(p=>p.name).join(', ');
+}
+function renderScheduleTable(){
+  const card = document.getElementById('scheduleTableCard');
+  if(!card) return;
+  if(state.blocks.length===0){ card.innerHTML=''; return; }
+  const hasSchedule = Object.keys(state.assignment).length>0 || Object.keys(state.locks).length>0;
+  card.innerHTML = `<div class="table-wrap"><table>
+    <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Declined</th><th>Assigned to</th></tr></thead>
+    <tbody>
+      ${state.blocks.map(b=>{
+        const pid = effectiveAssignment(b.key);
+        const locked = !!state.locks[b.key];
+        const p = pid ? state.people.find(x=>x.id===pid) : null;
+        const isReq = p && p.blockStatus[b.key]==='requested';
+        const eligiblePeople = state.people.filter(person=>person.services.includes(b.service));
+        const wanted = namesWithStatus(b,'requested'), declined = namesWithStatus(b,'unavailable');
+        const options = `<option value="">${hasSchedule?'— unfilled —':'— solver decides —'}</option>` + eligiblePeople.map(person=>`<option value="${person.id}" ${pid===person.id?'selected':''}>${esc(person.name)}</option>`).join('');
+        return `<tr class="${hasSchedule && !p ? 'unfilled':'hoverable'}">
+          <td><span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>${b.holidayWeek?' <span class="pill pill-neutral" title="Holiday week">holiday</span>':''}</td>
+          <td class="mono">${fmtShort(b.start)} – ${fmtShort(b.end)}</td>
+          <td class="mono" style="color:var(--ink-faint);">${fmtShort(b.postcall)}${b.postcallShifted?' <span class="hint" title="Normally '+fmtShort(b.rawPostcall)+'">(moved)</span>':''}</td>
+          <td class="hint">${esc(wanted)||'—'}</td>
+          <td class="hint">${esc(declined)||'—'}</td>
+          <td>
+            <div class="row gap-8" style="flex-wrap:nowrap;">
+              <select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>
+              ${locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
+            </div>
+            ${!p && hasSchedule ? `<div class="hint" style="margin-top:4px;">${esc(unfilledReason(b))}</div>` : ''}
+          </td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+  </table></div>`;
+  card.querySelectorAll('[data-lock-key]').forEach(sel=> sel.onchange = ()=>{
+    const key = sel.dataset.lockKey, val = sel.value;
+    if(val){ state.locks[key] = val; } else { delete state.locks[key]; }
+    renderSchedule();
+    persistSchedule(); // background; never blocks the UI
+  });
+}
+
+/* ---------------------------------------------------------------------
+   RENDERING — REPORT
+--------------------------------------------------------------------- */
+function renderReport(){
+  const el = document.getElementById('panel-report');
+  if(state.people.length===0){
+    el.innerHTML = `<div class="card"><div class="empty-state"><strong>Nothing to report yet</strong>Add people to the roster and generate a schedule.</div></div>`;
+    return;
+  }
+  const hasSchedule = Object.keys(state.assignment).length>0 || Object.keys(state.locks).length>0;
+  function serviceCell(p, service){
+    if(!p.services.includes(service)) return '<span class="hint">—</span>';
+    const assignedThis = state.blocks.filter(b=>b.service===service && effectiveAssignment(b.key)===p.id);
+    const reqTotal = Object.entries(p.blockStatus).filter(([k,v])=>v==='requested' && k.startsWith(service+'-')).length;
+    const reqSat = assignedThis.filter(b=>p.blockStatus[b.key]==='requested').length;
+    const target = p.targetWeeks[service];
+    const delta = target!=null ? assignedThis.length-target : null;
+    return `<div><span class="mono">${reqTotal||0} req → ${assignedThis.length} given</span>${reqTotal?` <span class="hint">(${reqSat} of ${reqTotal} honored)</span>`:''}</div>`
+      + `<div class="hint">target ${target==null?'—':target}${delta!=null&&delta!==0?` <span class="pill ${delta>0?'pill-warn':'pill-bad'}">${delta>0?'+':''}${delta}</span>`:delta===0?' <span class="pill pill-good">met</span>':''}</div>`;
+  }
+  el.innerHTML = `<div class="card">
+    <h2>Per-person outcome</h2>
+    <div class="desc">${hasSchedule?'Requested → Given mirrors the tally at the bottom of your working sheets, tracked separately per service since APS and PCS targets are independent.':'Generate a schedule to see results here.'}</div>
+    ${hasSchedule?`<div class="table-wrap"><table>
+      <thead><tr><th>Name</th><th>APS</th><th>PCS</th><th>Weeks</th></tr></thead>
+      <tbody>
+        ${state.people.map(p=>{
+          const assigned = state.blocks.filter(b=>effectiveAssignment(b.key)===p.id);
+          return `<tr class="hoverable">
+            <td>${esc(p.name)}</td>
+            <td>${serviceCell(p,'APS')}</td>
+            <td>${serviceCell(p,'PCS')}</td>
+            <td><div class="chip-row">${assigned.map(b=>`<span class="chip">${b.service} ${fmtShort(b.start)}${state.locks[b.key]?' 📌':''}</span>`).join('')||'<span class="hint">none</span>'}</div></td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table></div>`:''}
+  </div>`;
+}
+
+/* ---------------------------------------------------------------------
+   TABS / TOAST / MAIN RENDER
+--------------------------------------------------------------------- */
+function toast(msg){
+  const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(toast._h); toast._h=setTimeout(()=>t.classList.remove('show'),3200);
+}
+// Safety net: a bug anywhere should surface as a visible message, never a silent no-op.
+window.addEventListener('error', (e)=>{ console.error(e.error||e.message); toast('Something went wrong: '+(e.error&&e.error.message||e.message)); });
+window.addEventListener('unhandledrejection', (e)=>{ console.error(e.reason); toast('Something went wrong: '+(e.reason&&e.reason.message||String(e.reason))); });
+function switchTab(name){
+  document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
+  ['setup','roster','schedule','report'].forEach(n=>{ document.getElementById('panel-'+n).hidden = n!==name; });
+}
+document.querySelectorAll('.tab').forEach(t=> t.onclick = ()=>{ switchTab(t.dataset.tab); if(t.dataset.tab==='schedule') renderSchedule(); if(t.dataset.tab==='report') renderReport(); });
+document.getElementById('personModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='personModalOverlay') closePersonModal(); });
+
+function renderAll(){
+  renderSetup();
+  renderRoster();
+  renderSchedule();
+  renderReport();
+  document.getElementById('footerNote').textContent = state.backend==='db'
+    ? 'Data is stored with this page and shared with anyone who opens it.'
+    : 'This view can\'t reach shared storage, so data is kept in this browser only — export a roster/schedule backup periodically.';
+}
+
+(async function init(){
+  try{
+    await initPersistence();
+  }catch(e){
+    console.error('initPersistence failed', e);
+    state.backend = 'local';
+    try{ setSyncStatus(); }catch(e2){}
+  }
+  try{
+    rebuildBlocks();
+    renderAll();
+  }catch(e){
+    console.error('render failed', e);
+    const p = document.getElementById('panel-setup');
+    if(p){
+      p.hidden = false;
+      p.innerHTML = `<div class="card"><h2 style="color:var(--bad)">Something went wrong loading the app</h2>`
+        + `<div class="desc">${esc(e && e.message || String(e))}</div>`
+        + `<div class="hint mono" style="white-space:pre-wrap;">${esc(e && e.stack || '')}</div></div>`;
+    }
+  }
+})();
+
+})();
+</script>
