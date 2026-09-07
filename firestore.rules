@@ -41,10 +41,12 @@ service cloud.firestore {
 
     match /admins/{email} {
       allow read: if signedIn();
-      allow create: if signedIn()
+      allow create: if isAdmin() || (
+        signedIn()
         && myEmail() == email
         && isBootstrapOwner(email)
-        && !exists(/databases/$(database)/documents/admins/$(email));
+        && !exists(/databases/$(database)/documents/admins/$(email))
+      );
       allow update, delete: if isAdmin();
     }
 

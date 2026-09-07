@@ -347,6 +347,7 @@ const state = {
   modal: null,           // { mode:'person'|'import', ... } while a modal is open
   importQueue: [],       // File objects still waiting to be reviewed
   auth: { user:null, isAdmin:false, myPerson:null },
+  admins: [],            // [{email, addedAt, addedBy}] — loaded for admins only, see loadAdmins()
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
   calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
   myRequestsFilters: null // lazily created per person — see ensureMyRequestsFilters()
@@ -452,6 +453,20 @@ async function persistSchedule(){
  * requests screen for a person that might not really exist server-side). */
 async function persistOnboardPerson(p){
   await setDoc(doc(fsDb,'people',p.id), p);
+}
+
+/* ---- Admin management (admins can add/remove other admins) ---- */
+async function loadAdmins(){
+  try{
+    const snap = await getDocs(collection(fsDb,'admins'));
+    state.admins = snap.docs.map(d=>({ email:d.id, ...d.data() })).sort((a,b)=>a.email.localeCompare(b.email));
+  }catch(e){ console.error('loadAdmins failed', e); state.admins = []; }
+}
+async function persistAddAdmin(email){
+  await setDoc(doc(fsDb,'admins',email), { addedAt:new Date().toISOString(), addedBy:myEmail() });
+}
+async function persistRemoveAdmin(email){
+  await deleteDoc(doc(fsDb,'admins',email));
 }
 
 /* ---------------------------------------------------------------------
@@ -754,7 +769,37 @@ function renderSetup(){
       </div>`}
     </div>
     <div class="card" id="blocksPreviewCard"></div>
+    <div class="card">
+      <h2>Admins</h2>
+      <div class="desc">Admins can change the rotation window and holidays, edit anyone's roster entry, and generate or pin the schedule. Add someone by the email they'll sign in with.</div>
+      <div class="row gap-8" style="margin-bottom:14px;">
+        <input class="input" type="email" id="newAdminEmail" placeholder="their.email@example.com" style="max-width:280px;">
+        <button class="btn" id="btnAddAdmin">Add admin</button>
+      </div>
+      <div class="chip-row">
+        ${state.admins.map(a=>`<span class="chip" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;">${esc(a.email)}${a.email===myEmail()?' <em>(you)</em>':''} <button class="btn-ghost" data-rm-admin="${esc(a.email)}" title="Remove admin" style="border:none;background:none;cursor:pointer;color:var(--bad);font-family:inherit;">✕</button></span>`).join('') || '<span class="hint">No admins loaded.</span>'}
+      </div>
+    </div>
   `;
+  document.getElementById('btnAddAdmin').onclick = ()=>{
+    const emailEl = document.getElementById('newAdminEmail');
+    const email = emailEl.value.trim().toLowerCase();
+    if(!email || !email.includes('@')){ toast('Enter a valid email first.'); return; }
+    if(state.admins.some(a=>a.email===email)){ toast('That email is already an admin.'); return; }
+    state.admins.push({ email, addedAt:new Date().toISOString(), addedBy:myEmail() });
+    renderSetup();
+    toast(`${email} is now an admin.`);
+    persistAddAdmin(email).catch(e=>{ toast('Failed to save: '+e.message); state.admins=state.admins.filter(a=>a.email!==email); renderSetup(); });
+  };
+  document.querySelectorAll('[data-rm-admin]').forEach(btn=> btn.onclick = ()=>{
+    const email = btn.dataset.rmAdmin;
+    if(email===myEmail()){ if(!confirm('Remove yourself as admin? You will lose admin access immediately.')) return; }
+    else if(!confirm(`Remove ${email} as admin?`)) return;
+    state.admins = state.admins.filter(a=>a.email!==email);
+    renderSetup();
+    persistRemoveAdmin(email).catch(e=>toast('Failed to remove: '+e.message));
+    if(email===myEmail()){ state.auth.isAdmin=false; renderAll(); }
+  });
   document.getElementById('btnAddHoliday').onclick = ()=>{
     try{
       const dateEl = document.getElementById('holidayDate'), labelEl = document.getElementById('holidayLabel');
@@ -1814,6 +1859,7 @@ async function bootForUser(user){
     }
     await withTimeout(loadAllData(), DB_TIMEOUT_MS, timeoutMsg);
     await refreshRole();
+    if(state.auth.isAdmin) await withTimeout(loadAdmins(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
     rebuildBlocks();
     document.getElementById('loadingScreen').hidden = true;
     document.querySelector('.app').hidden = false;
