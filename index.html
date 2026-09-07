@@ -171,6 +171,21 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .empty-state strong{ color:var(--ink-soft); display:block; margin-bottom:4px; font-size:14px;}
 
 .chip-row{ display:flex; flex-wrap:wrap; gap:5px; }
+
+.filter-group-label{ font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; color:var(--ink-soft); margin-bottom:6px; }
+.cal-grid-wrap{ overflow:auto; max-height:72vh; border-radius:var(--radius); }
+.cal-grid{ border-collapse:separate; border-spacing:0; font-size:12.5px; }
+.cal-grid th, .cal-grid td{ border-right:1px solid var(--line); border-bottom:1px solid var(--line); padding:7px 10px; text-align:center; }
+.cal-corner{ position:sticky; left:0; top:0; z-index:3; background:var(--surface); }
+.cal-person-head{ position:sticky; top:0; z-index:2; background:var(--surface); font-weight:600; text-align:left; white-space:nowrap; }
+.cal-week-head{ position:sticky; left:0; z-index:1; background:var(--surface); text-align:left; white-space:nowrap; }
+.cal-cell{ cursor:pointer; font-size:15px; min-width:34px; user-select:none; }
+.cal-cell:hover{ background:var(--surface-2); }
+.cal-cell-na{ color:var(--ink-faint); cursor:default; background:var(--bg); }
+.cal-cell-requested{ color:var(--aps); font-weight:700; background:var(--aps-soft); }
+.cal-cell-unavailable{ color:var(--bad); font-weight:700; background:var(--bad-soft); }
+.cal-cell-neutral{ color:var(--line-strong); }
+.cal-cell-dim{ opacity:.22; }
 .chip{ font-size:11px; padding:2px 7px; border-radius:5px; background:var(--surface-2); color:var(--ink-soft); font-family:'IBM Plex Mono',monospace; }
 
 .toast{ position:fixed; bottom:22px; left:50%; transform:translateX(-50%); background:var(--ink); color:var(--bg); padding:10px 18px; border-radius:8px; font-size:13px; box-shadow:var(--shadow); z-index:50; opacity:0; pointer-events:none; transition:opacity .2s, transform .2s; }
@@ -323,7 +338,9 @@ const state = {
   scheduleMeta: null,    // {generatedAt, score}
   modal: null,           // { mode:'person'|'import', ... } while a modal is open
   importQueue: [],       // File objects still waiting to be reviewed
-  auth: { user:null, isAdmin:false, myPerson:null }
+  auth: { user:null, isAdmin:false, myPerson:null },
+  rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
+  calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false }
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
 function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
@@ -933,6 +950,86 @@ function renderMyRequests(){
     }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
   };
 }
+/** Week × staff matrix: every filtered week down the rows, every filtered
+ * person across the columns, their status for that week in the cell.
+ * Admins can click a cell to cycle Available → Requested → Unavailable —
+ * same underlying data as the per-person editor, just viewed the other way. */
+function renderRosterCalendar(){
+  const container = document.getElementById('rosterViewCard');
+  const f = state.calendarFilters;
+  const filteredBlocks = state.blocks.filter(b => f.services[b.service] && (!f.holidaysOnly || b.holidayWeek));
+  const filteredPeople = state.people.filter(p => p.services.some(s=>f.services[s]));
+  const symbolFor = st => st==='requested' ? '★' : st==='unavailable' ? '✕' : '·';
+  const labelFor = st => st==='requested' ? 'Requested' : st==='unavailable' ? 'Unavailable' : 'Available';
+
+  container.innerHTML = `
+    <div class="card">
+      <div class="row gap-8" style="flex-wrap:wrap;align-items:flex-start;">
+        <div>
+          <div class="filter-group-label">Service</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="calfAPS" ${f.services.APS?'checked':''}> APS</label>
+            <label class="checkbox-row"><input type="checkbox" id="calfPCS" ${f.services.PCS?'checked':''}> PCS</label>
+          </div>
+        </div>
+        <div>
+          <div class="filter-group-label">Status shown</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="calfAvail" ${f.statuses.neutral?'checked':''}> Available</label>
+            <label class="checkbox-row"><input type="checkbox" id="calfReq" ${f.statuses.requested?'checked':''}> Requested</label>
+            <label class="checkbox-row"><input type="checkbox" id="calfUnavail" ${f.statuses.unavailable?'checked':''}> Unavailable</label>
+          </div>
+        </div>
+        <div>
+          <div class="filter-group-label">Weeks</div>
+          <label class="checkbox-row"><input type="checkbox" id="calfHolidays" ${f.holidaysOnly?'checked':''}> Holiday weeks only</label>
+        </div>
+      </div>
+      <div class="hint" style="margin-top:12px;">${filteredBlocks.length} week(s) × ${filteredPeople.length} people. Click a cell to cycle Available → Requested → Unavailable. Statuses you've unchecked above still show, just dimmed.</div>
+    </div>
+    <div class="card" style="margin-top:16px;padding:0;">
+      ${filteredBlocks.length===0 || filteredPeople.length===0 ? `<div class="empty-state" style="padding:32px;"><strong>Nothing matches these filters</strong>Widen the service or week filters above.</div>` : `
+      <div class="cal-grid-wrap">
+        <table class="cal-grid">
+          <thead><tr>
+            <th class="cal-corner">Week</th>
+            ${filteredPeople.map(p=>`<th class="cal-person-head">${esc(p.name)}</th>`).join('')}
+          </tr></thead>
+          <tbody>
+            ${filteredBlocks.map(b=>`<tr>
+              <td class="cal-week-head">
+                <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
+                <div class="mono" style="font-size:11.5px;margin-top:3px;color:var(--ink-soft);">${fmtShort(b.start)} – ${fmtShort(b.end)}</div>
+                ${b.holidayWeek?'<span class="pill pill-neutral" style="margin-top:3px;display:inline-block;">holiday</span>':''}
+              </td>
+              ${filteredPeople.map(p=>{
+                if(!p.services.includes(b.service)) return `<td class="cal-cell cal-cell-na">—</td>`;
+                const st = p.blockStatus[b.key] || 'neutral';
+                const shown = f.statuses[st];
+                return `<td class="cal-cell cal-cell-${st} ${shown?'':'cal-cell-dim'}" data-person="${p.id}" data-block="${b.key}" title="${esc(p.name)} — ${labelFor(st)}">${symbolFor(st)}</td>`;
+              }).join('')}
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+  `;
+  document.getElementById('calfAPS').onchange = e=>{ f.services.APS=e.target.checked; renderRosterCalendar(); };
+  document.getElementById('calfPCS').onchange = e=>{ f.services.PCS=e.target.checked; renderRosterCalendar(); };
+  document.getElementById('calfAvail').onchange = e=>{ f.statuses.neutral=e.target.checked; renderRosterCalendar(); };
+  document.getElementById('calfReq').onchange = e=>{ f.statuses.requested=e.target.checked; renderRosterCalendar(); };
+  document.getElementById('calfUnavail').onchange = e=>{ f.statuses.unavailable=e.target.checked; renderRosterCalendar(); };
+  document.getElementById('calfHolidays').onchange = e=>{ f.holidaysOnly=e.target.checked; renderRosterCalendar(); };
+  container.querySelectorAll('.cal-cell[data-person]').forEach(td=> td.onclick = ()=>{
+    const p = state.people.find(x=>x.id===td.dataset.person);
+    const key = td.dataset.block;
+    const cur = p.blockStatus[key] || 'neutral';
+    const next = cur==='neutral' ? 'requested' : cur==='requested' ? 'unavailable' : 'neutral';
+    if(next==='neutral') delete p.blockStatus[key]; else p.blockStatus[key] = next;
+    persistPerson(p); // background; never blocks the UI
+    renderRosterCalendar();
+  });
+}
 function renderRosterAdmin(){
   const el = document.getElementById('panel-roster');
   document.getElementById('rosterTabLabel').textContent = 'Roster & Requests';
@@ -946,18 +1043,30 @@ function renderRosterAdmin(){
           <button class="btn btn-primary" id="btnAddPerson">Add person</button>
         </div>
       </div>
-      <div class="row gap-8" style="margin-top:12px;">
-        <button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
-        <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>
+      <div class="row between" style="margin-top:12px;">
+        <div class="row gap-8">
+          <button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
+          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>
+        </div>
+        <div class="segmented">
+          <button class="seg-btn ${state.rosterView==='list'?'active':''}" id="btnViewList" style="${state.rosterView==='list'?'background:var(--surface-2);color:var(--ink);':''}">List view</button>
+          <button class="seg-btn ${state.rosterView==='calendar'?'active':''}" id="btnViewCalendar" style="${state.rosterView==='calendar'?'background:var(--surface-2);color:var(--ink);':''}">Calendar view</button>
+        </div>
       </div>
     </div>
-    <div class="card" id="peopleListCard"></div>
+    <div id="rosterViewCard"></div>
   `;
   document.getElementById('btnAddPerson').onclick = ()=> openPersonModal(null);
   document.getElementById('btnExportRoster').onclick = exportRosterXlsx;
   document.getElementById('fileImportBackup').onchange = (e)=>{ if(e.target.files[0]) importRosterBackupXlsx(e.target.files[0]); e.target.value=''; };
   document.getElementById('fileImportRequests').onchange = (e)=>{ if(e.target.files.length) handleImportRequestFiles(e.target.files); e.target.value=''; };
-  renderPeopleList();
+  document.getElementById('btnViewList').onclick = ()=>{ state.rosterView='list'; renderRosterAdmin(); };
+  document.getElementById('btnViewCalendar').onclick = ()=>{ state.rosterView='calendar'; renderRosterAdmin(); };
+  if(state.rosterView==='calendar') renderRosterCalendar();
+  else{
+    document.getElementById('rosterViewCard').innerHTML = `<div class="card" id="peopleListCard"></div>`;
+    renderPeopleList();
+  }
 }
 function renderPeopleList(){
   const card = document.getElementById('peopleListCard');
