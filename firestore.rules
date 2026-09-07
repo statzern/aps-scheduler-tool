@@ -14,7 +14,14 @@ rules_version = '2';
 //   user whose email matches a person doc's `email` field may update ONLY
 //   that document, and only its `blockStatus` and `targetWeeks` fields —
 //   their own week requests and target counts. Name, services, and the
-//   restrict-to-requested flag stay admin-only.
+//   restrict-to-requested flag stay admin-only to change after creation.
+//   A signed-in user with no roster entry yet may self-onboard exactly
+//   once: create a person doc AT THEIR OWN AUTH UID as the document id,
+//   with their own email, starting blank (no requests, not restricted) —
+//   that's what makes it a one-time "who are you" step rather than a
+//   general write: they can never create a second doc for themselves
+//   (the id is fixed to their uid), and editing name/services after that
+//   is admin-only via the update rule above.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -53,7 +60,15 @@ service cloud.firestore {
 
     match /people/{personId} {
       allow read: if signedIn();
-      allow create, delete: if isAdmin();
+      allow delete: if isAdmin();
+      allow create: if isAdmin() || (
+        signedIn() &&
+        personId == request.auth.uid &&
+        request.resource.data.email is string &&
+        request.resource.data.email.lower() == myEmail() &&
+        request.resource.data.restrictToRequested == false &&
+        request.resource.data.blockStatus.size() == 0
+      );
       allow update: if isAdmin() || (
         signedIn() &&
         resource.data.email is string &&

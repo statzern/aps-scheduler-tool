@@ -420,6 +420,13 @@ async function persistSchedule(){
   try{ await setDoc(doc(fsDb,'schedule','current'), { assignment:state.assignment, locks:state.locks, ...state.scheduleMeta }); }
   catch(e){ toast('Save failed: '+e.message); }
 }
+/** First-login self-onboarding: creates a signed-in user's own person doc,
+ * keyed by their auth uid (not awaited-in-background like the others —
+ * the caller needs to know it actually succeeded before showing the
+ * requests screen for a person that might not really exist server-side). */
+async function persistOnboardPerson(p){
+  await setDoc(doc(fsDb,'people',p.id), p);
+}
 
 /* ---------------------------------------------------------------------
    BLOCK GENERATION & CONFLICTS
@@ -818,6 +825,46 @@ function renderRoster(){
   if(state.auth.isAdmin) renderRosterAdmin();
   else renderMyRequests();
 }
+/** First login, no roster entry yet: collect just enough to create one
+ * (name + service), then hand off to the normal My Requests screen. Name
+ * and service become admin-only to change after this — see firestore.rules. */
+function renderOnboarding(el){
+  el.innerHTML = `
+    <div class="card">
+      <h2>Welcome — let's get you set up</h2>
+      <div class="desc">You're signed in as <strong>${esc(myEmail())}</strong> but you're not on the roster yet. Enter your name and which service(s) you cover, then you can submit your weekly requests.</div>
+      <div class="field" style="margin-bottom:14px;"><label for="obName">Your name</label><input class="input" id="obName" placeholder="Full name"></div>
+      <div class="field"><label>Which service(s) do you cover?</label>
+        <div class="row gap-8" style="padding-top:6px;">
+          <label class="checkbox-row"><input type="checkbox" id="obAPS"> APS</label>
+          <label class="checkbox-row"><input type="checkbox" id="obPCS"> PCS</label>
+        </div>
+      </div>
+      <div class="row" style="margin-top:16px;">
+        <button class="btn btn-primary" id="btnOnboard">Continue</button>
+      </div>
+    </div>
+  `;
+  document.getElementById('btnOnboard').onclick = async ()=>{
+    const btn = document.getElementById('btnOnboard');
+    const name = document.getElementById('obName').value.trim();
+    const services = [ ...(document.getElementById('obAPS').checked?['APS']:[]), ...(document.getElementById('obPCS').checked?['PCS']:[]) ];
+    if(!name){ toast('Enter your name first.'); return; }
+    if(services.length===0){ toast('Pick at least one service.'); return; }
+    btn.disabled = true; btn.textContent = 'Saving…';
+    try{
+      const person = normalizePerson({ id: state.auth.user.uid, name, email: myEmail(), services, targetWeeks:{APS:null,PCS:null}, restrictToRequested:false, blockStatus:{} });
+      await persistOnboardPerson(person);
+      state.people.push(person);
+      state.auth.myPerson = person;
+      toast('Thanks! Now enter your weekly requests below.');
+      renderRoster();
+    }catch(e){
+      toast('Something went wrong saving: '+e.message); console.error(e);
+      btn.disabled = false; btn.textContent = 'Continue';
+    }
+  };
+}
 /** Non-admin view: just their own entry, editable only for blockStatus and
  * targetWeeks — everything else (name, services, restrict flag) is admin-only,
  * enforced both here (no controls for it) and by the Firestore rules. */
@@ -826,10 +873,7 @@ function renderMyRequests(){
   document.getElementById('rosterTabLabel').textContent = 'My Requests';
   document.getElementById('rosterCount').textContent = '';
   const person = state.auth.myPerson;
-  if(!person){
-    el.innerHTML = `<div class="card"><div class="empty-state"><strong>Your account isn't linked to the roster yet</strong>Ask your admin to add <strong>${esc(myEmail())}</strong> as your email on your roster entry, then reload this page.</div></div>`;
-    return;
-  }
+  if(!person){ renderOnboarding(el); return; }
   if(!state.myRequestsDraft || state.myRequestsDraft.id!==person.id){
     state.myRequestsDraft = { id:person.id, blockStatus:{...person.blockStatus}, targetWeeks:{...person.targetWeeks} };
   }
