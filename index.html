@@ -194,6 +194,14 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 details.advanced summary{ cursor:pointer; font-size:13px; font-weight:600; color:var(--ink-soft); padding:4px 0; }
 details.advanced[open] summary{ margin-bottom:10px; }
 
+details.filter-card{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:16px 20px; box-shadow:var(--shadow); }
+details.filter-card summary{ cursor:pointer; font-weight:600; font-size:14px; list-style:none; display:flex; align-items:center; gap:7px; }
+details.filter-card summary::-webkit-details-marker{ display:none; }
+details.filter-card summary::before{ content:'▸'; display:inline-block; font-size:11px; color:var(--ink-soft); transition:transform .15s; }
+details.filter-card[open] summary::before{ transform:rotate(90deg); }
+details.filter-card[open] summary{ margin-bottom:14px; }
+details.filter-card .filter-count{ font-weight:400; color:var(--ink-soft); font-size:12.5px; }
+
 .footer-note{ margin-top:30px; font-size:12px; color:var(--ink-faint); text-align:center; }
 @media (prefers-reduced-motion: reduce){ *{ transition:none!important; } }
 
@@ -340,7 +348,8 @@ const state = {
   importQueue: [],       // File objects still waiting to be reviewed
   auth: { user:null, isAdmin:false, myPerson:null },
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
-  calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false }
+  calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
+  myRequestsFilters: null // lazily created per person — see ensureMyRequestsFilters()
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
 function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
@@ -885,6 +894,17 @@ function renderOnboarding(el){
 /** Non-admin view: just their own entry, editable only for blockStatus and
  * targetWeeks — everything else (name, services, restrict flag) is admin-only,
  * enforced both here (no controls for it) and by the Firestore rules. */
+/** Lazily creates (or resets, if the signed-in person changed) the filter
+ * state for My Requests — defaults to that person's own services, since
+ * showing a service-filter checkbox for a service they don't cover would
+ * be pointless. */
+function ensureMyRequestsFilters(person){
+  if(!state.myRequestsFilters || state.myRequestsFilters.personId!==person.id){
+    const services = {}; person.services.forEach(s=>services[s]=true);
+    state.myRequestsFilters = { personId:person.id, services, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true };
+  }
+  return state.myRequestsFilters;
+}
 function renderMyRequests(){
   const el = document.getElementById('panel-roster');
   document.getElementById('rosterTabLabel').textContent = 'My Requests';
@@ -895,8 +915,15 @@ function renderMyRequests(){
     state.myRequestsDraft = { id:person.id, blockStatus:{...person.blockStatus}, targetWeeks:{...person.targetWeeks} };
   }
   const draft = state.myRequestsDraft;
-  const relevantBlocks = state.blocks.filter(b=>person.services.includes(b.service));
-  const groups = groupByMonth(relevantBlocks);
+  const f = ensureMyRequestsFilters(person);
+  const allRelevant = state.blocks.filter(b=>person.services.includes(b.service));
+  const filteredBlocks = allRelevant.filter(b=>{
+    if(!f.services[b.service]) return false;
+    if(f.holidaysOnly && !b.holidayWeek) return false;
+    const st = draft.blockStatus[b.key] || 'neutral';
+    return f.statuses[st];
+  });
+  const groups = groupByMonth(filteredBlocks);
   el.innerHTML = `
     <div class="card">
       <h2>My requests — ${esc(person.name)}</h2>
@@ -907,10 +934,35 @@ function renderMyRequests(){
       </div>
       ${person.restrictToRequested?'<div class="hint" style="margin-top:10px;">Your admin has set you to only be scheduled on weeks marked Requested below.</div>':''}
     </div>
-    ${relevantBlocks.length===0 ? `<div class="card" style="margin-top:16px;"><div class="empty-state">No weeks are set up yet — check back once your admin sets the rotation window.</div></div>` : `
+    ${allRelevant.length===0 ? `<div class="card" style="margin-top:16px;"><div class="empty-state">No weeks are set up yet — check back once your admin sets the rotation window.</div></div>` : `
+    <details class="filter-card" id="myReqFilterDetails" style="margin-top:16px;" ${f.uiOpen?'open':''}>
+      <summary>Filters <span class="filter-count">— ${filteredBlocks.length} of ${allRelevant.length} week(s) shown</span></summary>
+      <div class="row gap-8" style="flex-wrap:wrap;align-items:flex-start;">
+        ${person.services.length>1?`<div>
+          <div class="filter-group-label">Service</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="mrfAPS" ${f.services.APS?'checked':''}> APS</label>
+            <label class="checkbox-row"><input type="checkbox" id="mrfPCS" ${f.services.PCS?'checked':''}> PCS</label>
+          </div>
+        </div>`:''}
+        <div>
+          <div class="filter-group-label">Status</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="mrfAvail" ${f.statuses.neutral?'checked':''}> Available</label>
+            <label class="checkbox-row"><input type="checkbox" id="mrfReq" ${f.statuses.requested?'checked':''}> Requested</label>
+            <label class="checkbox-row"><input type="checkbox" id="mrfUnavail" ${f.statuses.unavailable?'checked':''}> Unavailable</label>
+          </div>
+        </div>
+        <div>
+          <div class="filter-group-label">Weeks</div>
+          <label class="checkbox-row"><input type="checkbox" id="mrfHolidays" ${f.holidaysOnly?'checked':''}> Holiday weeks only</label>
+        </div>
+      </div>
+    </details>
     <div class="card" style="margin-top:16px;">
+      ${filteredBlocks.length===0 ? `<div class="empty-state">No weeks match these filters.</div>` : `
       <div class="row between" style="margin-bottom:8px;">
-        <strong style="font-size:13px;">Weeks (${relevantBlocks.length})</strong>
+        <strong style="font-size:13px;">Weeks (${filteredBlocks.length})</strong>
         <span class="hint">Available (default) · Requested · Unavailable</span>
       </div>
       <div class="block-list" style="max-height:520px;">
@@ -922,16 +974,28 @@ function renderMyRequests(){
             <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
           </div>`);
         }).join('')}`).join('')}
-      </div>
+      </div>`}
       <div class="row" style="margin-top:16px;">
         <button class="btn btn-primary" id="btnSaveMyRequests">Save my requests</button>
       </div>
     </div>`}
   `;
+  const filterDetails = document.getElementById('myReqFilterDetails');
+  if(filterDetails){
+    filterDetails.addEventListener('toggle', e=>{ f.uiOpen = e.target.open; });
+    const bindFilter = (id, apply)=>{ const elm=document.getElementById(id); if(elm) elm.onchange = e=>{ apply(e.target.checked); renderMyRequests(); }; };
+    bindFilter('mrfAPS', v=>f.services.APS=v);
+    bindFilter('mrfPCS', v=>f.services.PCS=v);
+    bindFilter('mrfAvail', v=>f.statuses.neutral=v);
+    bindFilter('mrfReq', v=>f.statuses.requested=v);
+    bindFilter('mrfUnavail', v=>f.statuses.unavailable=v);
+    bindFilter('mrfHolidays', v=>f.holidaysOnly=v);
+  }
   el.querySelectorAll('.segmented').forEach(seg=>{
     seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
       const key = seg.dataset.key, v = btn.dataset.v;
       if(v==='neutral') delete draft.blockStatus[key]; else draft.blockStatus[key]=v;
+      if(!f.statuses[v]){ renderMyRequests(); return; } // this row no longer matches the status filter — re-render to drop it
       seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
     });
   });
@@ -963,7 +1027,8 @@ function renderRosterCalendar(){
   const labelFor = st => st==='requested' ? 'Requested' : st==='unavailable' ? 'Unavailable' : 'Available';
 
   container.innerHTML = `
-    <div class="card">
+    <details class="filter-card" id="calFilterDetails" ${f.uiOpen?'open':''}>
+      <summary>Filters <span class="filter-count">— ${filteredBlocks.length} week(s) × ${filteredPeople.length} people shown</span></summary>
       <div class="row gap-8" style="flex-wrap:wrap;align-items:flex-start;">
         <div>
           <div class="filter-group-label">Service</div>
@@ -985,8 +1050,8 @@ function renderRosterCalendar(){
           <label class="checkbox-row"><input type="checkbox" id="calfHolidays" ${f.holidaysOnly?'checked':''}> Holiday weeks only</label>
         </div>
       </div>
-      <div class="hint" style="margin-top:12px;">${filteredBlocks.length} week(s) × ${filteredPeople.length} people. Click a cell to cycle Available → Requested → Unavailable. Statuses you've unchecked above still show, just dimmed.</div>
-    </div>
+      <div class="hint" style="margin-top:12px;">Click a cell to cycle Available → Requested → Unavailable. Statuses you've unchecked above still show, just dimmed.</div>
+    </details>
     <div class="card" style="margin-top:16px;padding:0;">
       ${filteredBlocks.length===0 || filteredPeople.length===0 ? `<div class="empty-state" style="padding:32px;"><strong>Nothing matches these filters</strong>Widen the service or week filters above.</div>` : `
       <div class="cal-grid-wrap">
@@ -1014,6 +1079,7 @@ function renderRosterCalendar(){
       </div>`}
     </div>
   `;
+  document.getElementById('calFilterDetails').addEventListener('toggle', e=>{ f.uiOpen = e.target.open; });
   document.getElementById('calfAPS').onchange = e=>{ f.services.APS=e.target.checked; renderRosterCalendar(); };
   document.getElementById('calfPCS').onchange = e=>{ f.services.PCS=e.target.checked; renderRosterCalendar(); };
   document.getElementById('calfAvail').onchange = e=>{ f.statuses.neutral=e.target.checked; renderRosterCalendar(); };
