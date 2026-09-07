@@ -160,6 +160,7 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .segmented{ display:inline-flex; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; flex:none; }
 .seg-btn{ appearance:none; border:none; background:var(--surface); color:var(--ink-soft); padding:6px 10px; font-size:12px; font-weight:500; cursor:pointer; border-left:1px solid var(--line-strong); }
 .seg-btn:first-child{ border-left:none; }
+.seg-btn.active{ background:var(--surface-2); color:var(--ink); }
 .seg-btn.active[data-v="requested"]{ background:var(--aps-soft); color:var(--aps); }
 .seg-btn.active[data-v="unavailable"]{ background:var(--bad-soft); color:var(--bad); }
 .seg-btn.active[data-v="neutral"]{ background:var(--surface-2); color:var(--ink); }
@@ -251,6 +252,10 @@ details.filter-card .filter-count{ font-weight:400; color:var(--ink-soft); font-
     </div>
     <div class="sync-status">
       <span class="role-badge" id="roleBadge"></span>
+      <div class="segmented" id="viewToggle" hidden style="flex:none;">
+        <button class="seg-btn" data-view="admin">Admin view</button>
+        <button class="seg-btn" data-view="staff">My view</button>
+      </div>
       <span id="whoami"></span>
       <button class="btn btn-ghost btn-sm" id="btnSignOut">Sign out</button>
     </div>
@@ -347,6 +352,7 @@ const state = {
   modal: null,           // { mode:'person'|'import', ... } while a modal is open
   importQueue: [],       // File objects still waiting to be reviewed
   auth: { user:null, isAdmin:false, myPerson:null },
+  viewMode: 'admin',     // 'admin' | 'staff' — lets a real admin switch into the plain staff experience for their own entry; resets to 'admin' each session
   admins: [],            // [{email, addedAt, addedBy}] — loaded for admins only, see loadAdmins()
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
   calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
@@ -354,6 +360,12 @@ const state = {
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
 function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
+/** Whether the UI should show admin chrome right now. A real admin who's
+ * switched to "My view" is still a real admin (Firestore rules don't
+ * change), this only decides what the interface offers them — a clean
+ * way to edit their own entry without admin-only fields/controls in the
+ * way, same screens a regular staff member gets. */
+function effectiveAdminView(){ return state.auth.isAdmin && state.viewMode!=='staff'; }
 
 /* ---------------------------------------------------------------------
    PERSISTENCE — Firebase Auth + Firestore
@@ -724,7 +736,7 @@ function unfilledReason(b){
 --------------------------------------------------------------------- */
 function renderSetup(){
   const el = document.getElementById('panel-setup');
-  if(!state.auth.isAdmin){
+  if(!effectiveAdminView()){
     el.innerHTML = `<div class="card"><div class="empty-state"><strong>Admins only</strong>Only an admin can change the rotation window, holidays, or solver settings.</div></div>`;
     return;
   }
@@ -891,19 +903,19 @@ function groupByMonth(blocks){
 /* ---------------------------------------------------------------------
    RENDERING — ROSTER
 --------------------------------------------------------------------- */
-/** Admins get the full roster; everyone else gets just their own entry. */
-/** Admins are staff too — if an admin doesn't have a roster entry yet
- * (e.g. a newly-added admin nobody has created one for), they get the
- * same one-time "who are you" onboarding as anyone else before falling
- * through to their normal role's view. */
+/** Admins get the full roster (unless they've switched to "My view");
+ * everyone else always gets just their own entry. Admins are staff too —
+ * if an admin doesn't have a roster entry yet (e.g. a newly-added admin
+ * nobody has created one for), they get the same one-time "who are you"
+ * onboarding as anyone else before falling through to their view. */
 function renderRoster(){
   if(!state.auth.myPerson){
-    document.getElementById('rosterTabLabel').textContent = state.auth.isAdmin ? 'Roster & Requests' : 'My Requests';
-    document.getElementById('rosterCount').textContent = state.auth.isAdmin && state.people.length ? `(${state.people.length})` : '';
+    document.getElementById('rosterTabLabel').textContent = effectiveAdminView() ? 'Roster & Requests' : 'My Requests';
+    document.getElementById('rosterCount').textContent = effectiveAdminView() && state.people.length ? `(${state.people.length})` : '';
     renderOnboarding(document.getElementById('panel-roster'));
     return;
   }
-  if(state.auth.isAdmin) renderRosterAdmin();
+  if(effectiveAdminView()) renderRosterAdmin();
   else renderMyRequests();
 }
 /** First login, no roster entry yet: collect just enough to create one
@@ -938,7 +950,7 @@ function renderOnboarding(el){
       await persistOnboardPerson(person);
       state.people.push(person);
       state.auth.myPerson = person;
-      toast(state.auth.isAdmin ? "Thanks! You're on the roster now — find yourself in the list below to enter your own weekly requests." : 'Thanks! Now enter your weekly requests below.');
+      toast(effectiveAdminView() ? "Thanks! You're on the roster now — find yourself in the list below to enter your own weekly requests." : 'Thanks! Now enter your weekly requests below.');
       renderRoster();
     }catch(e){
       toast('Something went wrong saving: '+e.message); console.error(e);
@@ -1622,10 +1634,10 @@ function renderSchedule(){
         <div><h2>Schedule</h2><div class="desc" style="margin-bottom:0;">Runs a search over every valid combination to maximize satisfied requests and target weeks while keeping every week covered. Pin a specific week yourself using the "Assigned to" dropdown below — the solver will always leave a pinned week alone and fill in the rest around it.</div></div>
         <div class="row gap-8">
           <button class="btn" id="btnExportSchedule" ${state.blocks.length===0?'disabled':''}>Export (.xlsx)</button>
-          ${state.auth.isAdmin ? `<button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>` : ''}
+          ${effectiveAdminView() ? `<button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>` : ''}
         </div>
       </div>
-      ${state.auth.isAdmin && !canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
+      ${effectiveAdminView() && !canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
     </div>
     ${state.blocks.length>0 ? `
     <div class="stat-grid" style="margin-top:16px;">
@@ -1690,7 +1702,7 @@ function renderScheduleTable(){
           <td class="hint">${esc(declined)||'—'}</td>
           <td>
             <div class="row gap-8" style="flex-wrap:nowrap;">
-              ${state.auth.isAdmin
+              ${effectiveAdminView()
                 ? `<select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>`
                 : `<span>${p ? esc(p.name) : '<span class="hint">unfilled</span>'}</span>`}
               ${locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
@@ -1760,23 +1772,35 @@ function toast(msg){
 window.addEventListener('error', (e)=>{ console.error(e.error||e.message); toast('Something went wrong: '+(e.error&&e.error.message||e.message)); });
 window.addEventListener('unhandledrejection', (e)=>{ console.error(e.reason); toast('Something went wrong: '+(e.reason&&e.reason.message||String(e.reason))); });
 function switchTab(name){
-  if(name==='setup' && !state.auth.isAdmin) name = 'roster'; // admin tab hidden but guard anyway
+  if(name==='setup' && !effectiveAdminView()) name = 'roster'; // Setup hidden in this view but guard anyway
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   ['setup','roster','schedule','report'].forEach(n=>{ document.getElementById('panel-'+n).hidden = n!==name; });
 }
 document.querySelectorAll('.tab').forEach(t=> t.onclick = ()=>{ switchTab(t.dataset.tab); if(t.dataset.tab==='schedule') renderSchedule(); if(t.dataset.tab==='report') renderReport(); });
 document.getElementById('personModalOverlay').addEventListener('click', (e)=>{ if(e.target.id==='personModalOverlay') closePersonModal(); });
+document.querySelectorAll('#viewToggle .seg-btn').forEach(btn=> btn.onclick = ()=>{
+  state.viewMode = btn.dataset.view;
+  renderAll();
+});
 
-/** Show/hide chrome that depends on role: the Setup tab, and (defensively,
- * since a stale tab selection could otherwise leave an admin-only panel
- * showing) make sure a non-admin never lands on Setup. */
+/** Show/hide chrome that depends on role and the current view: the Setup
+ * tab and admin schedule controls follow effectiveAdminView() (real admin
+ * status can still be toggled to the plain staff experience via "My
+ * view"); the role badge and the view toggle itself always reflect the
+ * REAL underlying permission, so nobody loses track of what they actually
+ * are — "My view" changes what the interface offers, never what Firestore
+ * allows. */
 function applyRoleToChrome(){
-  document.querySelectorAll('[data-admin-only]').forEach(el=> el.hidden = !state.auth.isAdmin);
+  const adminView = effectiveAdminView();
+  document.querySelectorAll('[data-admin-only]').forEach(el=> el.hidden = !adminView);
   document.getElementById('roleBadge').textContent = state.auth.isAdmin ? 'Admin' : 'Staff';
   document.getElementById('roleBadge').className = 'role-badge ' + (state.auth.isAdmin ? 'admin' : 'staff');
+  const toggle = document.getElementById('viewToggle');
+  toggle.hidden = !state.auth.isAdmin;
+  toggle.querySelectorAll('.seg-btn').forEach(btn=> btn.classList.toggle('active', btn.dataset.view===state.viewMode));
   document.getElementById('whoami').textContent = state.auth.user ? state.auth.user.email : '';
   const activeTab = document.querySelector('.tab.active');
-  if(!state.auth.isAdmin && activeTab && activeTab.dataset.tab==='setup') switchTab('roster');
+  if(!adminView && activeTab && activeTab.dataset.tab==='setup') switchTab('roster');
 }
 
 function renderAll(){
@@ -1785,7 +1809,8 @@ function renderAll(){
   renderRoster();
   renderSchedule();
   renderReport();
-  document.getElementById('footerNote').textContent = 'Signed in as ' + (state.auth.user ? state.auth.user.email : '') + ' · ' + (state.auth.isAdmin ? 'admin' : 'staff') + ' access.';
+  const roleText = state.auth.isAdmin ? (effectiveAdminView() ? 'admin access' : 'admin access (viewing as staff)') : 'staff access';
+  document.getElementById('footerNote').textContent = 'Signed in as ' + (state.auth.user ? state.auth.user.email : '') + ' · ' + roleText + '.';
 }
 
 /* ---------------------------------------------------------------------
