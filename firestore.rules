@@ -36,7 +36,7 @@ service cloud.firestore {
     // The one email allowed to self-bootstrap as the first admin.
     // Change this (and redeploy rules) if the owning account ever changes.
     function isBootstrapOwner(email) {
-      return email == 'statzern@gmail.com';
+      return email == 'nicholas.statzer@vumc.org';
     }
 
     match /admins/{email} {

@@ -300,7 +300,7 @@ const fbAuth = getAuth(fbApp);
 const fsDb = getFirestore(fbApp);
 // The one email allowed to self-provision as the first admin — must match
 // the isBootstrapOwner() check in firestore.rules.
-const OWNER_EMAIL = 'statzern@gmail.com';
+const OWNER_EMAIL = 'nicholas.statzer@vumc.org';
 
 (function(){
 "use strict";
@@ -892,7 +892,17 @@ function groupByMonth(blocks){
    RENDERING — ROSTER
 --------------------------------------------------------------------- */
 /** Admins get the full roster; everyone else gets just their own entry. */
+/** Admins are staff too — if an admin doesn't have a roster entry yet
+ * (e.g. a newly-added admin nobody has created one for), they get the
+ * same one-time "who are you" onboarding as anyone else before falling
+ * through to their normal role's view. */
 function renderRoster(){
+  if(!state.auth.myPerson){
+    document.getElementById('rosterTabLabel').textContent = state.auth.isAdmin ? 'Roster & Requests' : 'My Requests';
+    document.getElementById('rosterCount').textContent = state.auth.isAdmin && state.people.length ? `(${state.people.length})` : '';
+    renderOnboarding(document.getElementById('panel-roster'));
+    return;
+  }
   if(state.auth.isAdmin) renderRosterAdmin();
   else renderMyRequests();
 }
@@ -928,7 +938,7 @@ function renderOnboarding(el){
       await persistOnboardPerson(person);
       state.people.push(person);
       state.auth.myPerson = person;
-      toast('Thanks! Now enter your weekly requests below.');
+      toast(state.auth.isAdmin ? "Thanks! You're on the roster now — find yourself in the list below to enter your own weekly requests." : 'Thanks! Now enter your weekly requests below.');
       renderRoster();
     }catch(e){
       toast('Something went wrong saving: '+e.message); console.error(e);
