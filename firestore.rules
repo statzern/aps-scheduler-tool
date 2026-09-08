@@ -9,19 +9,28 @@ rules_version = '2';
 //   added by an existing admin (from the app, or directly in the console).
 // - config/*, schedule/*: admin-only writes (rotation window, holidays,
 //   solver weights, generated schedule, manual locks). Everyone signed in
-//   can read them.
+//   can read them. config/settings.editingOpen (default true when absent)
+//   additionally gates the self-service writes below — admins are never
+//   blocked by it.
 // - people/{id}: an admin can create/delete/update any person. A signed-in
 //   user whose email matches a person doc's `email` field may update ONLY
 //   that document, and only its `blockStatus` and `targetWeeks` fields —
-//   their own week requests and target counts. Name, services, and the
-//   restrict-to-requested flag stay admin-only to change after creation.
-//   A signed-in user with no roster entry yet may self-onboard exactly
-//   once: create a person doc AT THEIR OWN AUTH UID as the document id,
-//   with their own email, starting blank (no requests, not restricted) —
-//   that's what makes it a one-time "who are you" step rather than a
-//   general write: they can never create a second doc for themselves
-//   (the id is fixed to their uid), and editing name/services after that
-//   is admin-only via the update rule above.
+//   their own week requests and target counts — and only while the current
+//   period's requests are open. Name, services, and the restrict-to-requested
+//   flag stay admin-only to change after creation. A signed-in user with no
+//   roster entry yet may self-onboard exactly once: create a person doc AT
+//   THEIR OWN AUTH UID as the document id, with their own email, starting
+//   blank (no requests, not restricted) — that's what makes it a one-time
+//   "who are you" step rather than a general write: they can never create a
+//   second doc for themselves (the id is fixed to their uid), and editing
+//   name/services after that is admin-only via the update rule above.
+// - personComments/{personId}: free-text notes on a person's weeks, kept out
+//   of the wide-open `people` read so they stay private to admins and the
+//   person themselves — same email match as people's self-update, and the
+//   same editingOpen gate for self-writes.
+// - periods/{id}: read-only archives of closed scheduling periods, written
+//   when an admin closes one out. Admin-only both ways — history isn't
+//   shown to staff.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -37,6 +46,12 @@ service cloud.firestore {
     // Change this (and redeploy rules) if the owning account ever changes.
     function isBootstrapOwner(email) {
       return email == 'nicholas.statzer@vumc.org';
+    }
+    // Default true when the field is absent, so existing config/settings
+    // docs (written before this field existed) don't suddenly lock staff out.
+    function editingOpen() {
+      let cfg = get(/databases/$(database)/documents/config/settings).data;
+      return !('editingOpen' in cfg) || cfg.editingOpen != false;
     }
 
     match /admins/{email} {
@@ -75,8 +90,27 @@ service cloud.firestore {
         signedIn() &&
         resource.data.email is string &&
         resource.data.email.lower() == myEmail() &&
-        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['blockStatus', 'targetWeeks'])
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['blockStatus', 'targetWeeks']) &&
+        editingOpen()
       );
+    }
+
+    match /personComments/{personId} {
+      allow read: if isAdmin() || (
+        signedIn() &&
+        exists(/databases/$(database)/documents/people/$(personId)) &&
+        get(/databases/$(database)/documents/people/$(personId)).data.email.lower() == myEmail()
+      );
+      allow write: if isAdmin() || (
+        signedIn() &&
+        exists(/databases/$(database)/documents/people/$(personId)) &&
+        get(/databases/$(database)/documents/people/$(personId)).data.email.lower() == myEmail() &&
+        editingOpen()
+      );
+    }
+
+    match /periods/{periodId} {
+      allow read, write: if isAdmin();
     }
   }
 }

@@ -152,10 +152,17 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .month-group{ margin-bottom:14px; }
 .month-header{ font-size:12px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.05em; padding:8px 4px 6px; position:sticky; top:0; background:var(--surface); }
 .block-list{ max-height:420px; overflow-y:auto; border:1px solid var(--line); border-radius:9px; background:var(--bg); padding:4px 10px; }
-.block-row{ display:flex; align-items:center; justify-content:space-between; gap:10px; padding:8px 4px; border-bottom:1px solid var(--line); }
+.block-row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 4px; border-bottom:1px solid var(--line); }
 .block-row:last-child{ border-bottom:none; }
-.block-row .dates{ font-size:13px; }
+.block-row .dates{ font-size:13px; flex:1 1 220px; min-width:160px; }
 .block-row .dates .pc{ color:var(--ink-faint); font-size:11.5px; display:block; margin-top:1px; }
+.block-row-controls{ flex:0 0 auto; }
+.block-row-controls .segmented{ width:100%; }
+.block-row-controls .seg-btn{ flex:1; text-align:center; padding:7px 10px; }
+.block-row-comment{ flex:1 1 100%; }
+.block-row-comment .input{ width:100%; padding:6px 9px; font-size:12.5px; }
+.period-banner{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn); border-radius:var(--radius); padding:10px 16px; margin-bottom:16px; font-size:13.5px; font-weight:500; }
+.comment-marker{ box-shadow:inset 0 -2px 0 var(--accent); }
 
 .segmented{ display:inline-flex; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; flex:none; }
 .seg-btn{ appearance:none; border:none; background:var(--surface); color:var(--ink-soft); padding:6px 10px; font-size:12px; font-weight:500; cursor:pointer; border-left:1px solid var(--line-strong); }
@@ -252,6 +259,7 @@ details.filter-card .filter-count{ font-weight:400; color:var(--ink-soft); font-
     </div>
     <div class="sync-status">
       <span class="role-badge" id="roleBadge"></span>
+      <select class="select" id="periodSelect" hidden style="flex:none;font-size:12.5px;padding:6px 8px;"></select>
       <div class="segmented" id="viewToggle" hidden style="flex:none;">
         <button class="seg-btn" data-view="admin">Admin view</button>
         <button class="seg-btn" data-view="staff">My view</button>
@@ -259,6 +267,11 @@ details.filter-card .filter-count{ font-weight:400; color:var(--ink-soft); font-
       <span id="whoami"></span>
       <button class="btn btn-ghost btn-sm" id="btnSignOut">Sign out</button>
     </div>
+  </div>
+
+  <div id="periodBanner" class="period-banner" hidden>
+    <span id="periodBannerText"></span>
+    <button class="btn btn-sm" id="btnBackToCurrent">Back to current period</button>
   </div>
 
   <div class="tabs" role="tablist">
@@ -342,7 +355,10 @@ function uid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'id-'+Math.ran
 const state = {
   config: { startDate:null, endDate:null, restDays:7, noBackToBack:true,
     holidays:[],          // [{date:'YYYY-MM-DD', label:'Christmas'}] — a post-call landing on one shifts forward
-    weights:{ request:15, target:8, unfilled:500 } },
+    weights:{ request:15, target:8, unfilled:500 },
+    editingOpen:true,     // false = admins froze staff self-service edits for this period (see firestore.rules)
+    periodLabel:''        // admin-facing label for the current scheduling period, e.g. "Spring 2026"
+  },
   people: [],           // {id,name,services:[],targetWeeks,restrictToRequested,blockStatus:{key:'requested'|'unavailable'}}
   blocks: [],           // derived
   conflicts: null,      // Map key->Set(key)
@@ -356,7 +372,10 @@ const state = {
   admins: [],            // [{email, addedAt, addedBy}] — loaded for admins only, see loadAdmins()
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
   calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
-  myRequestsFilters: null // lazily created per person — see ensureMyRequestsFilters()
+  myRequestsFilters: null, // lazily created per person — see ensureMyRequestsFilters()
+  comments: {},          // personId -> {blockKey:'free text'} — private notes; own doc(s) for staff, all docs for admins. See personComments/ in Firestore.
+  periodsArchive: [],    // admin-only: closed periods, newest first — see loadPeriodsArchive()
+  viewingPeriod: null    // an entry from periodsArchive while an admin is browsing history, else null (= live/current period)
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
 function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
@@ -366,6 +385,31 @@ function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase()
  * way to edit their own entry without admin-only fields/controls in the
  * way, same screens a regular staff member gets. */
 function effectiveAdminView(){ return state.auth.isAdmin && state.viewMode!=='staff'; }
+/** Everything Roster/Schedule/Report need to render, sourced from either the
+ * live period or — while an admin is browsing history via the period
+ * selector — a read-only snapshot from periodsArchive. Keeping this as one
+ * seam means those render functions don't need to know which one they're
+ * looking at, only whether `editable` lets them offer edit controls. */
+function currentViewContext(){
+  if(state.viewingPeriod){
+    const arc = state.viewingPeriod;
+    return {
+      blocks: computeBlocksForConfig(arc),
+      people: arc.people||[],
+      assignment: arc.assignment||{},
+      locks: arc.locks||{},
+      comments: arc.comments||{},
+      scheduleMeta: arc.generatedAt ? { generatedAt:arc.generatedAt, score:arc.score } : null,
+      editable: false
+    };
+  }
+  return {
+    blocks: state.blocks, people: state.people, assignment: state.assignment,
+    locks: state.locks, comments: state.comments, scheduleMeta: state.scheduleMeta,
+    editable: true
+  };
+}
+function ctxAssignment(ctx, key){ return ctx.locks[key] || ctx.assignment[key] || null; }
 
 /* ---------------------------------------------------------------------
    PERSISTENCE — Firebase Auth + Firestore
@@ -436,6 +480,11 @@ async function refreshRole(){
   }catch(e){ /* not an admin, or offline — either way, treat as non-admin */ }
   state.auth.myPerson = state.people.find(p=>p.email && p.email===email) || null;
 }
+/** True unless an admin has explicitly frozen self-service edits for the
+ * current period (see the "Scheduling period" card in Setup). Admins are
+ * never blocked by this — it only governs what staff can save themselves,
+ * matching the `editingOpen` gate in firestore.rules. */
+function isEditingOpen(){ return state.config.editingOpen!==false; }
 
 async function persistConfig(){
   try{ await setDoc(doc(fsDb,'config','settings'), state.config); }
@@ -481,21 +530,90 @@ async function persistRemoveAdmin(email){
   await deleteDoc(doc(fsDb,'admins',email));
 }
 
+/* ---- Per-week comments — kept in their own collection (not on the person
+   doc) so they can stay private to admins + the author; see personComments/
+   in firestore.rules. state.comments is personId -> {blockKey:text}. ---- */
+/** Admins load everyone's comments (one doc per person); a non-admin can
+ * only ever have their own doc returned by the rules, so this is safe to
+ * call the same way for both roles. */
+async function loadComments(){
+  try{
+    const snap = await getDocs(collection(fsDb,'personComments'));
+    state.comments = {};
+    snap.docs.forEach(d=>{ state.comments[d.id] = d.data()||{}; });
+  }catch(e){ console.error('loadComments failed', e); state.comments = {}; }
+}
+async function persistComments(personId, comments){
+  try{ await setDoc(doc(fsDb,'personComments',personId), comments); }
+  catch(e){ toast('Save failed: '+e.message); }
+}
+
+/* ---- Scheduling periods — admins can freeze/reopen requests for the
+   live period, and close it out into a read-only snapshot before starting
+   the next one. See periods/ in firestore.rules (admin-only). ---- */
+async function loadPeriodsArchive(){
+  try{
+    const snap = await getDocs(collection(fsDb,'periods'));
+    state.periodsArchive = snap.docs.map(d=>({ id:d.id, ...d.data() }))
+      .sort((a,b)=>(b.closedAt||'').localeCompare(a.closedAt||''));
+  }catch(e){ console.error('loadPeriodsArchive failed', e); state.periodsArchive = []; }
+}
+/** Archives everything about the period that's ending, then resets the live
+ * data for the one starting: availability and comments always reset;
+ * target-week counts and restrictToRequested carry over unchanged since
+ * they're a standing preference, not tied to one window's dates. The
+ * archive write happens first — if anything after it fails, the old period's
+ * record is already safe and this can just be retried. */
+async function persistClosePeriod(endingLabel, newStart, newEnd, newLabel){
+  const archive = {
+    label: endingLabel || state.config.periodLabel || `${state.config.startDate} to ${state.config.endDate}`,
+    startDate: state.config.startDate, endDate: state.config.endDate,
+    restDays: state.config.restDays, noBackToBack: state.config.noBackToBack,
+    holidays: state.config.holidays, weights: state.config.weights,
+    closedAt: new Date().toISOString(), closedBy: myEmail(),
+    people: state.people.map(p=>({...p})),
+    comments: JSON.parse(JSON.stringify(state.comments)),
+    assignment: state.assignment, locks: state.locks, ...state.scheduleMeta
+  };
+  await setDoc(doc(fsDb,'periods',uid()), archive);
+  await Promise.all(state.people.map(p=>{
+    p.blockStatus = {};
+    return updateDoc(doc(fsDb,'people',p.id), { blockStatus:{} });
+  }));
+  state.comments = {};
+  await Promise.all(archive.people.map(p=>
+    p ? setDoc(doc(fsDb,'personComments',p.id), {}) : Promise.resolve()
+  ));
+  state.assignment = {}; state.locks = {}; state.scheduleMeta = null;
+  await persistSchedule();
+  state.config.startDate = newStart; state.config.endDate = newEnd;
+  state.config.editingOpen = true; state.config.periodLabel = newLabel;
+  await persistConfig();
+}
+
 /* ---------------------------------------------------------------------
    BLOCK GENERATION & CONFLICTS
 --------------------------------------------------------------------- */
-function rebuildBlocks(){
-  const start = parseDateInput(state.config.startDate);
-  const end = parseDateInput(state.config.endDate);
+/** Pure: turns any config (live or an archived period's) into its list of
+ * rotation blocks. Shared by rebuildBlocks() for the live config and by
+ * currentViewContext() when an admin is browsing an archived period. */
+function computeBlocksForConfig(config){
+  const start = parseDateInput(config.startDate);
+  const end = parseDateInput(config.endDate);
+  const holidays = config.holidays||[];
   const blocks=[];
   if(start && end && end>=start){
     let d = firstWeekdayOnOrAfter(start,5); // Friday
-    while(d<=end){ blocks.push(makeBlock('APS', d)); d=addDays(d,7); }
+    while(d<=end){ blocks.push(makeBlock('APS', d, holidays)); d=addDays(d,7); }
     let d2 = firstWeekdayOnOrAfter(start,6); // Saturday
-    while(d2<=end){ blocks.push(makeBlock('PCS', d2)); d2=addDays(d2,7); }
+    while(d2<=end){ blocks.push(makeBlock('PCS', d2, holidays)); d2=addDays(d2,7); }
   }
   blocks.sort((a,b)=> a.start-b.start || a.service.localeCompare(b.service));
   blocks.forEach((b,i)=>b.index=i);
+  return blocks;
+}
+function rebuildBlocks(){
+  const blocks = computeBlocksForConfig(state.config);
   state.blocks = blocks;
   state.conflicts = buildConflicts(blocks, Number(state.config.restDays)||0, !!state.config.noBackToBack);
 }
@@ -536,23 +654,23 @@ function addStandardHolidays(){
   }
   return added;
 }
-function isHoliday(dateStr){ return state.config.holidays.some(h=>h.date===dateStr); }
-function isWeekendOrHoliday(d){ const dow=d.getDay(); return dow===0 || dow===6 || isHoliday(isoDate(d)); }
+function isHoliday(dateStr, holidays){ return holidays.some(h=>h.date===dateStr); }
+function isWeekendOrHoliday(d, holidays){ const dow=d.getDay(); return dow===0 || dow===6 || isHoliday(isoDate(d), holidays); }
 /** If a post-call day lands on a weekend or a configured holiday, push it forward
  * to the next day that is neither — matches the "post-call gets moved" convention
  * (a holiday Friday moves to the following Monday; a holiday Monday moves to Tuesday). */
-function adjustPostcall(rawPostcall){
+function adjustPostcall(rawPostcall, holidays){
   let d = rawPostcall;
-  while(isWeekendOrHoliday(d)) d = addDays(d,1);
+  while(isWeekendOrHoliday(d, holidays)) d = addDays(d,1);
   return d;
 }
-function makeBlock(service,start){
+function makeBlock(service,start,holidays){
   const end = addDays(start,6);
   const rawPostcall = service==='APS' ? addDays(start,7) : addDays(start,9);
-  const postcall = adjustPostcall(rawPostcall);
+  const postcall = adjustPostcall(rawPostcall, holidays);
   const postcallShifted = isoDate(postcall)!==isoDate(rawPostcall);
   let holidayWeek = false;
-  for(let d=start; d<=end; d=addDays(d,1)){ if(isHoliday(isoDate(d))){ holidayWeek=true; break; } }
+  for(let d=start; d<=end; d=addDays(d,1)){ if(isHoliday(isoDate(d), holidays)){ holidayWeek=true; break; } }
   return { key:`${service}-${isoDate(start)}`, service, start, end, rawPostcall, postcall, postcallShifted, holidayWeek };
 }
 function buildConflicts(blocks, restDays, noBackToBack){
@@ -734,14 +852,49 @@ function unfilledReason(b){
 /* ---------------------------------------------------------------------
    RENDERING — SETUP
 --------------------------------------------------------------------- */
+/** Read-only Setup content shown while an admin is browsing an archived
+ * period via the period selector — the live edit form would be misleading
+ * since none of it applies to history. */
+function renderArchivedSetup(el, arc){
+  el.innerHTML = `
+    <div class="card">
+      <h2>${esc(arc.label||'Archived period')}</h2>
+      <div class="desc">Closed ${arc.closedAt?esc(arc.closedAt.slice(0,10)):'—'}${arc.closedBy?' by '+esc(arc.closedBy):''}. Switch back to the current period (top bar) to make changes.</div>
+      <div class="grid-3">
+        <div class="field"><label>Start date</label><input class="input" value="${esc(arc.startDate||'—')}" disabled></div>
+        <div class="field"><label>End date</label><input class="input" value="${esc(arc.endDate||'—')}" disabled></div>
+        <div class="field"><label>Minimum rest (days)</label><input class="input" value="${arc.restDays==null?'—':arc.restDays}" disabled></div>
+      </div>
+      <div class="hint" style="margin-top:12px;">${(arc.holidays||[]).length} holiday(s) configured for this period.</div>
+    </div>
+  `;
+}
 function renderSetup(){
   const el = document.getElementById('panel-setup');
   if(!effectiveAdminView()){
     el.innerHTML = `<div class="card"><div class="empty-state"><strong>Admins only</strong>Only an admin can change the rotation window, holidays, or solver settings.</div></div>`;
     return;
   }
+  if(state.viewingPeriod){ renderArchivedSetup(el, state.viewingPeriod); return; }
   const c = state.config;
   el.innerHTML = `
+    <div class="card">
+      <h2>Scheduling period</h2>
+      <div class="desc">Label this rotation window for the period selector, and freeze staff self-service edits while you finalize a schedule without starting a new period.</div>
+      <div class="grid-2">
+        <div class="field"><label for="periodLabel">Period label</label><input class="input" id="periodLabel" placeholder="e.g. Spring 2026" value="${esc(c.periodLabel||'')}"></div>
+        <div class="field"><label>Staff requests</label>
+          <div class="segmented" style="margin-top:6px;">
+            <button class="seg-btn ${isEditingOpen()?'active':''}" id="btnEditingOpen" style="${isEditingOpen()?'background:var(--good-soft);color:var(--good);':''}">Open</button>
+            <button class="seg-btn ${!isEditingOpen()?'active':''}" id="btnEditingClosed" style="${!isEditingOpen()?'background:var(--bad-soft);color:var(--bad);':''}">Closed</button>
+          </div>
+        </div>
+      </div>
+      <div class="row between" style="margin-top:16px;">
+        <button class="btn btn-danger" id="btnClosePeriod">Close this period &amp; start a new one</button>
+        ${state.periodsArchive.length?`<span class="hint">${state.periodsArchive.length} archived period(s) — browse them from the selector in the top bar.</span>`:''}
+      </div>
+    </div>
     <div class="card">
       <h2>Rotation window</h2>
       <div class="desc">APS runs Friday–Thursday with a post-call day the following Friday. PCS runs Saturday–Friday with post-call the following Monday. Blocks are generated for every rotation that starts inside this window.</div>
@@ -793,6 +946,10 @@ function renderSetup(){
       </div>
     </div>
   `;
+  document.getElementById('periodLabel').onchange = e=>{ state.config.periodLabel = e.target.value.trim(); persistConfig(); };
+  document.getElementById('btnEditingOpen').onclick = ()=>{ state.config.editingOpen = true; renderSetup(); toast('Requests are open.'); persistConfig(); };
+  document.getElementById('btnEditingClosed').onclick = ()=>{ state.config.editingOpen = false; renderSetup(); toast('Requests are closed — staff can no longer edit their own weeks.'); persistConfig(); };
+  document.getElementById('btnClosePeriod').onclick = openClosePeriodModal;
   document.getElementById('btnAddAdmin').onclick = ()=>{
     const emailEl = document.getElementById('newAdminEmail');
     const email = emailEl.value.trim().toLowerCase();
@@ -883,15 +1040,21 @@ function renderBlocksPreview(){
     </div>
   `).join('');
 }
-function blockRowHtml(b, extra){
+/** extra: controls markup (e.g. the Available/Requested/Unavailable segmented
+ * control) shown to the right of the dates. comment: when given, renders an
+ * editable free-text note on its own full-width line below — used wherever a
+ * person can annotate a week regardless of its status (see the comment-input
+ * wiring in renderMyRequests/renderPersonModal). */
+function blockRowHtml(b, extra, comment){
   const pcNote = b.postcallShifted
     ? ` <span class="pill pill-warn" title="Normally ${fmtShort(b.rawPostcall)} — moved off a weekend/holiday">moved from ${fmtShort(b.rawPostcall)}</span>`
     : '';
   return `<div class="block-row">
     <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
-    <span class="dates" style="flex:1;margin-left:10px;">${fmtShort(b.start)} – ${fmtShort(b.end)}<span class="pc">Post-call ${fmtShort(b.postcall)}${pcNote}</span></span>
+    <span class="dates">${fmtShort(b.start)} – ${fmtShort(b.end)}<span class="pc">Post-call ${fmtShort(b.postcall)}${pcNote}</span></span>
     ${b.holidayWeek?'<span class="pill pill-neutral">Holiday week</span>':''}
-    ${extra||''}
+    ${extra?`<div class="block-row-controls">${extra}</div>`:''}
+    ${comment!==undefined?`<div class="block-row-comment"><input class="input" type="text" maxlength="500" data-comment-key="${b.key}" placeholder="Add a comment (optional)" value="${esc(comment)}"></div>`:''}
   </div>`;
 }
 function groupByMonth(blocks){
@@ -976,14 +1139,22 @@ function renderMyRequests(){
   const el = document.getElementById('panel-roster');
   document.getElementById('rosterTabLabel').textContent = 'My Requests';
   document.getElementById('rosterCount').textContent = '';
-  const person = state.auth.myPerson;
-  if(!person){ renderOnboarding(el); return; }
-  if(!state.myRequestsDraft || state.myRequestsDraft.id!==person.id){
-    state.myRequestsDraft = { id:person.id, blockStatus:{...person.blockStatus}, targetWeeks:{...person.targetWeeks} };
+  const ctx = currentViewContext();
+  const person = ctx.editable ? state.auth.myPerson : ctx.people.find(p=>p.email && p.email===myEmail());
+  if(!person){
+    if(ctx.editable) renderOnboarding(el);
+    else el.innerHTML = `<div class="card"><div class="empty-state">You weren't on the roster for this archived period.</div></div>`;
+    return;
+  }
+  const editable = ctx.editable && isEditingOpen();
+  const savedComments = ctx.comments[person.id] || {};
+  const draftKey = person.id + (ctx.editable ? '' : ':' + (state.viewingPeriod && state.viewingPeriod.id));
+  if(!state.myRequestsDraft || state.myRequestsDraft.key!==draftKey){
+    state.myRequestsDraft = { key:draftKey, id:person.id, blockStatus:{...person.blockStatus}, targetWeeks:{...person.targetWeeks}, comments:{...savedComments} };
   }
   const draft = state.myRequestsDraft;
   const f = ensureMyRequestsFilters(person);
-  const allRelevant = state.blocks.filter(b=>person.services.includes(b.service));
+  const allRelevant = ctx.blocks.filter(b=>person.services.includes(b.service));
   const filteredBlocks = allRelevant.filter(b=>{
     if(!f.services[b.service]) return false;
     if(f.holidaysOnly && !b.holidayWeek) return false;
@@ -992,12 +1163,13 @@ function renderMyRequests(){
   });
   const groups = groupByMonth(filteredBlocks);
   el.innerHTML = `
+    ${!editable && ctx.editable ? `<div class="period-banner"><span>Requests are closed for this period — your admin can still make changes on your behalf.</span></div>` : ''}
     <div class="card">
       <h2>My requests — ${esc(person.name)}</h2>
-      <div class="desc">Mark which weeks you want or can't do, and your target week count per service. Your admin handles your name, services, and everything else about your profile.</div>
+      <div class="desc">Mark which weeks you want or can't do, add an optional note, and set your target week count per service. Your admin handles your name, services, and everything else about your profile.</div>
       <div class="grid-2">
-        ${person.services.includes('APS')?`<div class="field"><label for="myTargetAPS">APS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetAPS" value="${draft.targetWeeks.APS==null?'':draft.targetWeeks.APS}"></div>`:''}
-        ${person.services.includes('PCS')?`<div class="field"><label for="myTargetPCS">PCS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetPCS" value="${draft.targetWeeks.PCS==null?'':draft.targetWeeks.PCS}"></div>`:''}
+        ${person.services.includes('APS')?`<div class="field"><label for="myTargetAPS">APS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetAPS" ${editable?'':'disabled'} value="${draft.targetWeeks.APS==null?'':draft.targetWeeks.APS}"></div>`:''}
+        ${person.services.includes('PCS')?`<div class="field"><label for="myTargetPCS">PCS target weeks (optional)</label><input class="input" type="number" min="0" id="myTargetPCS" ${editable?'':'disabled'} value="${draft.targetWeeks.PCS==null?'':draft.targetWeeks.PCS}"></div>`:''}
       </div>
       ${person.restrictToRequested?'<div class="hint" style="margin-top:10px;">Your admin has set you to only be scheduled on weeks marked Requested below.</div>':''}
     </div>
@@ -1035,16 +1207,17 @@ function renderMyRequests(){
       <div class="block-list" style="max-height:520px;">
         ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
           const st = draft.blockStatus[b.key] || 'neutral';
-          return blockRowHtml(b, `<div class="segmented" data-key="${b.key}">
-            <button class="seg-btn ${st==='neutral'?'active':''}" data-v="neutral">Available</button>
-            <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
-            <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
-          </div>`);
+          const seg = `<div class="segmented" data-key="${b.key}">
+            <button class="seg-btn ${st==='neutral'?'active':''}" data-v="neutral" ${editable?'':'disabled'}>Available</button>
+            <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested" ${editable?'':'disabled'}>Requested</button>
+            <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable" ${editable?'':'disabled'}>Unavailable</button>
+          </div>`;
+          return blockRowHtml(b, seg, draft.comments[b.key]||'');
         }).join('')}`).join('')}
       </div>`}
-      <div class="row" style="margin-top:16px;">
+      ${editable ? `<div class="row" style="margin-top:16px;">
         <button class="btn btn-primary" id="btnSaveMyRequests">Save my requests</button>
-      </div>
+      </div>` : ''}
     </div>`}
   `;
   const filterDetails = document.getElementById('myReqFilterDetails');
@@ -1058,14 +1231,20 @@ function renderMyRequests(){
     bindFilter('mrfUnavail', v=>f.statuses.unavailable=v);
     bindFilter('mrfHolidays', v=>f.holidaysOnly=v);
   }
-  el.querySelectorAll('.segmented').forEach(seg=>{
-    seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
-      const key = seg.dataset.key, v = btn.dataset.v;
-      if(v==='neutral') delete draft.blockStatus[key]; else draft.blockStatus[key]=v;
-      if(!f.statuses[v]){ renderMyRequests(); return; } // this row no longer matches the status filter — re-render to drop it
-      seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
+  if(editable){
+    el.querySelectorAll('.segmented').forEach(seg=>{
+      seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
+        const key = seg.dataset.key, v = btn.dataset.v;
+        if(v==='neutral') delete draft.blockStatus[key]; else draft.blockStatus[key]=v;
+        if(!f.statuses[v]){ renderMyRequests(); return; } // this row no longer matches the status filter — re-render to drop it
+        seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
+      });
     });
-  });
+    el.querySelectorAll('[data-comment-key]').forEach(inp=> inp.oninput = ()=>{
+      const key = inp.dataset.commentKey, v = inp.value;
+      if(v.trim()==='') delete draft.comments[key]; else draft.comments[key] = v;
+    });
+  }
   const saveBtn = document.getElementById('btnSaveMyRequests');
   if(saveBtn) saveBtn.onclick = ()=>{
     try{
@@ -1076,8 +1255,10 @@ function renderMyRequests(){
       };
       person.blockStatus = {...draft.blockStatus};
       person.targetWeeks = {...draft.targetWeeks};
+      state.comments[person.id] = {...draft.comments};
       toast('Your requests were saved.');
       persistPerson(person); // background
+      persistComments(person.id, draft.comments); // background
     }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
   };
 }
@@ -1087,9 +1268,10 @@ function renderMyRequests(){
  * same underlying data as the per-person editor, just viewed the other way. */
 function renderRosterCalendar(){
   const container = document.getElementById('rosterViewCard');
+  const ctx = currentViewContext();
   const f = state.calendarFilters;
-  const filteredBlocks = state.blocks.filter(b => f.services[b.service] && (!f.holidaysOnly || b.holidayWeek));
-  const filteredPeople = state.people.filter(p => p.services.some(s=>f.services[s]));
+  const filteredBlocks = ctx.blocks.filter(b => f.services[b.service] && (!f.holidaysOnly || b.holidayWeek));
+  const filteredPeople = ctx.people.filter(p => p.services.some(s=>f.services[s]));
   const symbolFor = st => st==='requested' ? '★' : st==='unavailable' ? '✕' : '·';
   const labelFor = st => st==='requested' ? 'Requested' : st==='unavailable' ? 'Unavailable' : 'Available';
 
@@ -1117,7 +1299,7 @@ function renderRosterCalendar(){
           <label class="checkbox-row"><input type="checkbox" id="calfHolidays" ${f.holidaysOnly?'checked':''}> Holiday weeks only</label>
         </div>
       </div>
-      <div class="hint" style="margin-top:12px;">Click a cell to cycle Available → Requested → Unavailable. Statuses you've unchecked above still show, just dimmed.</div>
+      ${ctx.editable?'<div class="hint" style="margin-top:12px;">Click a cell to cycle Available → Requested → Unavailable. Statuses you\'ve unchecked above still show, just dimmed. A comment shows as an underline — open that person to read or edit it.</div>':''}
     </details>
     <div class="card" style="margin-top:16px;padding:0;">
       ${filteredBlocks.length===0 || filteredPeople.length===0 ? `<div class="empty-state" style="padding:32px;"><strong>Nothing matches these filters</strong>Widen the service or week filters above.</div>` : `
@@ -1138,7 +1320,9 @@ function renderRosterCalendar(){
                 if(!p.services.includes(b.service)) return `<td class="cal-cell cal-cell-na">—</td>`;
                 const st = p.blockStatus[b.key] || 'neutral';
                 const shown = f.statuses[st];
-                return `<td class="cal-cell cal-cell-${st} ${shown?'':'cal-cell-dim'}" data-person="${p.id}" data-block="${b.key}" title="${esc(p.name)} — ${labelFor(st)}">${symbolFor(st)}</td>`;
+                const comment = (ctx.comments[p.id]||{})[b.key];
+                const title = `${esc(p.name)} — ${labelFor(st)}${comment?': '+esc(comment):''}`;
+                return `<td class="cal-cell cal-cell-${st} ${shown?'':'cal-cell-dim'} ${comment?'comment-marker':''}" ${ctx.editable?`data-person="${p.id}" data-block="${b.key}"`:''} title="${title}">${symbolFor(st)}</td>`;
               }).join('')}
             </tr>`).join('')}
           </tbody>
@@ -1153,7 +1337,7 @@ function renderRosterCalendar(){
   document.getElementById('calfReq').onchange = e=>{ f.statuses.requested=e.target.checked; renderRosterCalendar(); };
   document.getElementById('calfUnavail').onchange = e=>{ f.statuses.unavailable=e.target.checked; renderRosterCalendar(); };
   document.getElementById('calfHolidays').onchange = e=>{ f.holidaysOnly=e.target.checked; renderRosterCalendar(); };
-  container.querySelectorAll('.cal-cell[data-person]').forEach(td=> td.onclick = ()=>{
+  if(ctx.editable) container.querySelectorAll('.cal-cell[data-person]').forEach(td=> td.onclick = ()=>{
     const p = state.people.find(x=>x.id===td.dataset.person);
     const key = td.dataset.block;
     const cur = p.blockStatus[key] || 'neutral';
@@ -1165,21 +1349,22 @@ function renderRosterCalendar(){
 }
 function renderRosterAdmin(){
   const el = document.getElementById('panel-roster');
+  const ctx = currentViewContext();
   document.getElementById('rosterTabLabel').textContent = 'Roster & Requests';
-  document.getElementById('rosterCount').textContent = state.people.length ? `(${state.people.length})` : '';
+  document.getElementById('rosterCount').textContent = ctx.people.length ? `(${ctx.people.length})` : '';
   el.innerHTML = `
     <div class="card">
       <div class="row between">
-        <div><h2>Roster &amp; requests</h2><div class="desc" style="margin-bottom:0;">Add people directly, or import the request spreadsheets people send back — pick one or several at once and review each before it saves.</div></div>
-        <div class="row gap-8">
+        <div><h2>Roster &amp; requests</h2><div class="desc" style="margin-bottom:0;">${ctx.editable?'Add people directly, or import the request spreadsheets people send back — pick one or several at once and review each before it saves.':'Read-only — this is an archived period.'}</div></div>
+        ${ctx.editable?`<div class="row gap-8">
           <label class="btn btn-primary" style="cursor:pointer;">Import request file(s)<input type="file" id="fileImportRequests" accept=".xlsx" multiple style="display:none;"></label>
           <button class="btn btn-primary" id="btnAddPerson">Add person</button>
-        </div>
+        </div>`:''}
       </div>
       <div class="row between" style="margin-top:12px;">
         <div class="row gap-8">
-          <button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
-          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>
+          ${ctx.editable?`<button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
+          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>`:''}
         </div>
         <div class="segmented">
           <button class="seg-btn ${state.rosterView==='list'?'active':''}" id="btnViewList" style="${state.rosterView==='list'?'background:var(--surface-2);color:var(--ink);':''}">List view</button>
@@ -1189,10 +1374,12 @@ function renderRosterAdmin(){
     </div>
     <div id="rosterViewCard"></div>
   `;
-  document.getElementById('btnAddPerson').onclick = ()=> openPersonModal(null);
-  document.getElementById('btnExportRoster').onclick = exportRosterXlsx;
-  document.getElementById('fileImportBackup').onchange = (e)=>{ if(e.target.files[0]) importRosterBackupXlsx(e.target.files[0]); e.target.value=''; };
-  document.getElementById('fileImportRequests').onchange = (e)=>{ if(e.target.files.length) handleImportRequestFiles(e.target.files); e.target.value=''; };
+  if(ctx.editable){
+    document.getElementById('btnAddPerson').onclick = ()=> openPersonModal(null);
+    document.getElementById('btnExportRoster').onclick = exportRosterXlsx;
+    document.getElementById('fileImportBackup').onchange = (e)=>{ if(e.target.files[0]) importRosterBackupXlsx(e.target.files[0]); e.target.value=''; };
+    document.getElementById('fileImportRequests').onchange = (e)=>{ if(e.target.files.length) handleImportRequestFiles(e.target.files); e.target.value=''; };
+  }
   document.getElementById('btnViewList').onclick = ()=>{ state.rosterView='list'; renderRosterAdmin(); };
   document.getElementById('btnViewCalendar').onclick = ()=>{ state.rosterView='calendar'; renderRosterAdmin(); };
   if(state.rosterView==='calendar') renderRosterCalendar();
@@ -1204,11 +1391,12 @@ function renderRosterAdmin(){
 function renderPeopleList(){
   const card = document.getElementById('peopleListCard');
   if(!card) return;
-  if(state.people.length===0){
-    card.innerHTML = `<div class="empty-state"><strong>No one on the roster yet</strong>Add people or import a roster spreadsheet to get started.</div>`;
+  const ctx = currentViewContext();
+  if(ctx.people.length===0){
+    card.innerHTML = `<div class="empty-state"><strong>No one on the roster${ctx.editable?' yet':''}</strong>${ctx.editable?'Add people or import a roster spreadsheet to get started.':''}</div>`;
     return;
   }
-  card.innerHTML = `<div class="people-list">${state.people.map(p=>{
+  card.innerHTML = `<div class="people-list">${ctx.people.map(p=>{
     const svc = p.services.map(s=>`<span class="badge badge-${s.toLowerCase()}"><span class="badge-dot"></span>${s}</span>`).join(' ');
     const targetBits = p.services.filter(s=>p.targetWeeks[s]!=null).map(s=>`${s} target ${p.targetWeeks[s]} wk`).join(', ');
     const reqCount = Object.values(p.blockStatus).filter(v=>v==='requested').length;
@@ -1223,12 +1411,13 @@ function renderPeopleList(){
           ${p.restrictToRequested?`<span class="pill pill-warn">Requested weeks only</span>`:''}
         </div>
       </div>
-      <div class="row gap-8">
+      ${ctx.editable?`<div class="row gap-8">
         <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
         <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
-      </div>
+      </div>`:''}
     </div>`;
   }).join('')}</div>`;
+  if(!ctx.editable) return;
   card.querySelectorAll('[data-edit]').forEach(btn=> btn.onclick = ()=> openPersonModal(state.people.find(x=>x.id===btn.dataset.edit)));
   card.querySelectorAll('[data-del]').forEach(btn=> btn.onclick = ()=>{
     const p = state.people.find(x=>x.id===btn.dataset.del);
@@ -1243,8 +1432,8 @@ function renderPeopleList(){
    state.people (or the database) until "Save person" is clicked. ---- */
 function openPersonModal(existingPerson){
   state.modal = existingPerson
-    ? { mode:'person', isNew:false, id:existingPerson.id, draft: { ...existingPerson, services:[...existingPerson.services], blockStatus:{...existingPerson.blockStatus} } }
-    : { mode:'person', isNew:true, id:uid(), draft: normalizePerson({ id:uid(), name:'', services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }) };
+    ? { mode:'person', isNew:false, id:existingPerson.id, draft: { ...existingPerson, services:[...existingPerson.services], blockStatus:{...existingPerson.blockStatus}, comments:{...(state.comments[existingPerson.id]||{})} } }
+    : { mode:'person', isNew:true, id:uid(), draft: { ...normalizePerson({ id:uid(), name:'', services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }), comments:{} } };
   document.getElementById('personModalOverlay').hidden = false;
   document.addEventListener('keydown', onModalKeydown);
   renderModal();
@@ -1258,6 +1447,7 @@ function onModalKeydown(e){ if(e.key==='Escape') closePersonModal(); }
 function renderModal(){
   if(!state.modal) return;
   if(state.modal.mode==='import') renderImportModal();
+  else if(state.modal.mode==='closePeriod') renderClosePeriodModal();
   else renderPersonModal();
 }
 function renderPersonModal(){
@@ -1300,11 +1490,12 @@ function renderPersonModal(){
       <div class="block-list">
         ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
           const st = p.blockStatus[b.key] || 'neutral';
-          return blockRowHtml(b, `<div class="segmented" data-key="${b.key}">
+          const seg = `<div class="segmented" data-key="${b.key}">
             <button class="seg-btn ${st==='neutral'?'active':''}" data-v="neutral">Available</button>
             <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
             <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
-          </div>`);
+          </div>`;
+          return blockRowHtml(b, seg, p.comments[b.key]||'');
         }).join('')}`).join('')}
       </div>`}
     </div>
@@ -1333,6 +1524,10 @@ function renderPersonModal(){
       seg.querySelectorAll('.seg-btn').forEach(b2=>b2.classList.toggle('active', b2.dataset.v===v));
     });
   });
+  dialog.querySelectorAll('[data-comment-key]').forEach(inp=> inp.oninput = ()=>{
+    const key = inp.dataset.commentKey, v = inp.value;
+    if(v.trim()==='') delete p.comments[key]; else p.comments[key] = v;
+  });
   document.getElementById('btnSavePerson').onclick = ()=>{
     try{
       p.name = document.getElementById('pName').value.trim() || 'Unnamed';
@@ -1347,13 +1542,75 @@ function renderPersonModal(){
       if(p.restrictToRequested && !Object.values(p.blockStatus).includes('requested')){
         toast('Note: "requested weeks only" is on but no weeks are marked requested — this person won\'t be scheduled.');
       }
-      if(m.isNew){ state.people.push(p); }
-      else{ const idx = state.people.findIndex(x=>x.id===m.id); if(idx>=0) state.people[idx]=p; }
+      const comments = p.comments; // kept in personComments/, not on the people doc itself
+      const personDoc = {...p}; delete personDoc.comments;
+      if(m.isNew){ state.people.push(personDoc); }
+      else{ const idx = state.people.findIndex(x=>x.id===m.id); if(idx>=0) state.people[idx]=personDoc; }
+      state.comments[personDoc.id] = {...comments};
       closePersonModal();
       renderPeopleList();
       toast('Person saved.');
-      persistPerson(p); // background; never blocks the UI
+      persistPerson(personDoc); // background; never blocks the UI
+      persistComments(personDoc.id, comments); // background; never blocks the UI
     }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
+  };
+}
+
+/* ---- Close-period modal: archives the ending period, then resets the live
+   data for the one starting. Shares the person-modal overlay/dialog. ---- */
+function openClosePeriodModal(){
+  const c = state.config;
+  const curStart = parseDateInput(c.startDate), curEnd = parseDateInput(c.endDate);
+  let newStart = c.endDate||'', newEnd = c.endDate||'';
+  if(curEnd){
+    const ns = addDays(curEnd,1);
+    newStart = isoDate(ns);
+    newEnd = curStart ? isoDate(addDays(ns, Math.round((curEnd-curStart)/86400000))) : newStart;
+  }
+  state.modal = { mode:'closePeriod', endingLabel: c.periodLabel || `${c.startDate||'?'} to ${c.endDate||'?'}`, newLabel:'', newStart, newEnd };
+  document.getElementById('personModalOverlay').hidden = false;
+  document.addEventListener('keydown', onModalKeydown);
+  renderModal();
+}
+function renderClosePeriodModal(){
+  const dialog = document.getElementById('personModalDialog');
+  const m = state.modal;
+  dialog.innerHTML = `
+    <div class="row between" style="margin-bottom:14px;">
+      <h2>Close this period &amp; start a new one</h2>
+      <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
+    </div>
+    <div class="desc">Archives the current period's roster, requests, comments, and schedule as read-only history (browsable from the period selector), then clears everyone's availability and comments for the new window. Target-week counts and "requested weeks only" carry over unchanged. This can't be undone from the app.</div>
+    <div class="field" style="margin-top:12px;"><label for="cpEndingLabel">Label for the period ending</label><input class="input" id="cpEndingLabel" value="${esc(m.endingLabel)}"></div>
+    <div class="grid-3" style="margin-top:12px;">
+      <div class="field"><label for="cpNewStart">New start date</label><input class="input" type="date" id="cpNewStart" value="${m.newStart||''}"></div>
+      <div class="field"><label for="cpNewEnd">New end date</label><input class="input" type="date" id="cpNewEnd" value="${m.newEnd||''}"></div>
+      <div class="field"><label for="cpNewLabel">Label for the new period</label><input class="input" id="cpNewLabel" placeholder="e.g. Fall 2026" value="${esc(m.newLabel)}"></div>
+    </div>
+    <div class="row between" style="margin-top:16px;">
+      <button class="btn btn-ghost" id="btnCancelModal">Cancel</button>
+      <button class="btn btn-danger" id="btnConfirmClosePeriod">Archive &amp; start new period</button>
+    </div>
+  `;
+  document.getElementById('btnCloseModal').onclick = closePersonModal;
+  document.getElementById('btnCancelModal').onclick = closePersonModal;
+  document.getElementById('btnConfirmClosePeriod').onclick = async ()=>{
+    const btn = document.getElementById('btnConfirmClosePeriod');
+    const endingLabel = document.getElementById('cpEndingLabel').value.trim();
+    const newStart = document.getElementById('cpNewStart').value;
+    const newEnd = document.getElementById('cpNewEnd').value;
+    const newLabel = document.getElementById('cpNewLabel').value.trim();
+    if(!newStart || !newEnd || parseDateInput(newEnd) < parseDateInput(newStart)){ toast('Pick a valid new start and end date.'); return; }
+    if(!confirm(`Archive "${endingLabel}" and start a new period from ${newStart} to ${newEnd}?`)) return;
+    btn.disabled = true; btn.textContent = 'Archiving…';
+    try{
+      await persistClosePeriod(endingLabel, newStart, newEnd, newLabel);
+      await loadPeriodsArchive();
+      rebuildBlocks();
+      closePersonModal();
+      renderAll();
+      toast('Period archived — new period started.');
+    }catch(e){ toast('Something went wrong: '+e.message); console.error(e); btn.disabled=false; btn.textContent='Archive & start new period'; }
   };
 }
 
@@ -1593,7 +1850,7 @@ async function exportScheduleXlsx(){
     const pid = effectiveAssignment(b.key);
     const p = pid ? state.people.find(x=>x.id===pid) : null;
     rows.push([b.service, weekNum[b.service], fmtLong(b.start), fmtLong(b.end), fmtLong(b.postcall)+(b.postcallShifted?` (moved from ${fmtLong(b.rawPostcall)})`:''),
-      b.holidayWeek?'HOLIDAY':'', p ? p.name+(state.locks[b.key]?' (pinned)':'') : 'UNFILLED', namesWithStatus(b,'requested'), namesWithStatus(b,'unavailable')]);
+      b.holidayWeek?'HOLIDAY':'', p ? p.name+(state.locks[b.key]?' (pinned)':'') : 'UNFILLED', namesWithStatus(b,'requested',state.people), namesWithStatus(b,'unavailable',state.people)]);
   }
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [{wch:8},{wch:7},{wch:20},{wch:20},{wch:26},{wch:10},{wch:22},{wch:30},{wch:30}];
@@ -1625,25 +1882,26 @@ async function exportScheduleXlsx(){
 --------------------------------------------------------------------- */
 function renderSchedule(){
   const el = document.getElementById('panel-schedule');
-  const canGenerate = state.blocks.length>0 && state.people.length>0;
-  const filled = state.blocks.filter(b=>effectiveAssignment(b.key)).length;
-  const lockCount = Object.keys(state.locks).length;
+  const ctx = currentViewContext();
+  const canGenerate = ctx.editable && ctx.blocks.length>0 && ctx.people.length>0;
+  const filled = ctx.blocks.filter(b=>ctxAssignment(ctx,b.key)).length;
+  const lockCount = Object.keys(ctx.locks).length;
   el.innerHTML = `
     <div class="card">
       <div class="row between">
-        <div><h2>Schedule</h2><div class="desc" style="margin-bottom:0;">Runs a search over every valid combination to maximize satisfied requests and target weeks while keeping every week covered. Pin a specific week yourself using the "Assigned to" dropdown below — the solver will always leave a pinned week alone and fill in the rest around it.</div></div>
+        <div><h2>Schedule</h2><div class="desc" style="margin-bottom:0;">${ctx.editable?'Runs a search over every valid combination to maximize satisfied requests and target weeks while keeping every week covered. Pin a specific week yourself using the "Assigned to" dropdown below — the solver will always leave a pinned week alone and fill in the rest around it.':'Read-only — this is an archived period.'}</div></div>
         <div class="row gap-8">
-          <button class="btn" id="btnExportSchedule" ${state.blocks.length===0?'disabled':''}>Export (.xlsx)</button>
-          ${effectiveAdminView() ? `<button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${state.scheduleMeta?'Regenerate':'Generate schedule'}</button>` : ''}
+          ${ctx.editable?`<button class="btn" id="btnExportSchedule" ${ctx.blocks.length===0?'disabled':''}>Export (.xlsx)</button>`:''}
+          ${effectiveAdminView() && ctx.editable ? `<button class="btn btn-primary" id="btnGenerate" ${canGenerate?'':'disabled'}>${ctx.scheduleMeta?'Regenerate':'Generate schedule'}</button>` : ''}
         </div>
       </div>
-      ${effectiveAdminView() && !canGenerate?`<div class="hint" style="margin-top:10px;">${state.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
+      ${effectiveAdminView() && ctx.editable && !canGenerate?`<div class="hint" style="margin-top:10px;">${ctx.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
     </div>
-    ${state.blocks.length>0 ? `
+    ${ctx.blocks.length>0 ? `
     <div class="stat-grid" style="margin-top:16px;">
-      <div class="stat"><div class="num mono">${state.blocks.length}</div><div class="lbl">Total weeks</div></div>
-      <div class="stat"><div class="num mono" style="color:${filled===state.blocks.length?'var(--good)':'var(--bad)'}">${filled}/${state.blocks.length}</div><div class="lbl">Filled</div></div>
-      <div class="stat"><div class="num mono">${countRequestsSatisfied()}/${countRequestsTotal()}</div><div class="lbl">Requests honored</div></div>
+      <div class="stat"><div class="num mono">${ctx.blocks.length}</div><div class="lbl">Total weeks</div></div>
+      <div class="stat"><div class="num mono" style="color:${filled===ctx.blocks.length?'var(--good)':'var(--bad)'}">${filled}/${ctx.blocks.length}</div><div class="lbl">Filled</div></div>
+      <div class="stat"><div class="num mono">${countRequestsSatisfied(ctx)}/${countRequestsTotal(ctx)}</div><div class="lbl">Requests honored</div></div>
       <div class="stat"><div class="num mono">${lockCount||'—'}</div><div class="lbl">Weeks pinned by hand</div></div>
     </div>` : ''}
     <div class="card" id="scheduleTableCard" style="margin-top:16px;"></div>
@@ -1663,36 +1921,39 @@ function renderSchedule(){
   };
   const exportBtn = document.getElementById('btnExportSchedule');
   if(exportBtn) exportBtn.onclick = exportScheduleXlsx;
-  renderScheduleTable();
+  renderScheduleTable(ctx);
 }
-function countRequestsTotal(){ let n=0; for(const p of state.people) n += Object.values(p.blockStatus).filter(v=>v==='requested').length; return n; }
-function countRequestsSatisfied(){
+function countRequestsTotal(ctx){ let n=0; for(const p of ctx.people) n += Object.values(p.blockStatus).filter(v=>v==='requested').length; return n; }
+function countRequestsSatisfied(ctx){
   let n=0;
-  for(const b of state.blocks){
-    const pid = effectiveAssignment(b.key); if(!pid) continue;
-    const p = state.people.find(x=>x.id===pid);
+  for(const b of ctx.blocks){
+    const pid = ctxAssignment(ctx,b.key); if(!pid) continue;
+    const p = ctx.people.find(x=>x.id===pid);
     if(p && p.blockStatus[b.key]==='requested') n++;
   }
   return n;
 }
-function namesWithStatus(b, status){
-  return state.people.filter(p=>p.services.includes(b.service) && p.blockStatus[b.key]===status).map(p=>p.name).join(', ');
+/** people defaults to the live roster (used by the export, which always
+ * reflects the current period) — pass ctx.people explicitly to look at an
+ * archived period instead. */
+function namesWithStatus(b, status, people){
+  return (people||state.people).filter(p=>p.services.includes(b.service) && p.blockStatus[b.key]===status).map(p=>p.name).join(', ');
 }
-function renderScheduleTable(){
+function renderScheduleTable(ctx){
   const card = document.getElementById('scheduleTableCard');
   if(!card) return;
-  if(state.blocks.length===0){ card.innerHTML=''; return; }
-  const hasSchedule = Object.keys(state.assignment).length>0 || Object.keys(state.locks).length>0;
+  if(ctx.blocks.length===0){ card.innerHTML=''; return; }
+  const hasSchedule = Object.keys(ctx.assignment).length>0 || Object.keys(ctx.locks).length>0;
   card.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Declined</th><th>Assigned to</th></tr></thead>
     <tbody>
-      ${state.blocks.map(b=>{
-        const pid = effectiveAssignment(b.key);
-        const locked = !!state.locks[b.key];
-        const p = pid ? state.people.find(x=>x.id===pid) : null;
+      ${ctx.blocks.map(b=>{
+        const pid = ctxAssignment(ctx,b.key);
+        const locked = !!ctx.locks[b.key];
+        const p = pid ? ctx.people.find(x=>x.id===pid) : null;
         const isReq = p && p.blockStatus[b.key]==='requested';
-        const eligiblePeople = state.people.filter(person=>person.services.includes(b.service));
-        const wanted = namesWithStatus(b,'requested'), declined = namesWithStatus(b,'unavailable');
+        const eligiblePeople = ctx.people.filter(person=>person.services.includes(b.service));
+        const wanted = namesWithStatus(b,'requested',ctx.people), declined = namesWithStatus(b,'unavailable',ctx.people);
         const options = `<option value="">${hasSchedule?'— unfilled —':'— solver decides —'}</option>` + eligiblePeople.map(person=>`<option value="${person.id}" ${pid===person.id?'selected':''}>${esc(person.name)}</option>`).join('');
         return `<tr class="${hasSchedule && !p ? 'unfilled':'hoverable'}">
           <td><span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>${b.holidayWeek?' <span class="pill pill-neutral" title="Holiday week">holiday</span>':''}</td>
@@ -1702,12 +1963,12 @@ function renderScheduleTable(){
           <td class="hint">${esc(declined)||'—'}</td>
           <td>
             <div class="row gap-8" style="flex-wrap:nowrap;">
-              ${effectiveAdminView()
+              ${effectiveAdminView() && ctx.editable
                 ? `<select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>`
                 : `<span>${p ? esc(p.name) : '<span class="hint">unfilled</span>'}</span>`}
               ${locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
             </div>
-            ${!p && hasSchedule ? `<div class="hint" style="margin-top:4px;">${esc(unfilledReason(b))}</div>` : ''}
+            ${!p && hasSchedule && ctx.editable ? `<div class="hint" style="margin-top:4px;">${esc(unfilledReason(b))}</div>` : ''}
           </td>
         </tr>`;
       }).join('')}
@@ -1726,20 +1987,37 @@ function renderScheduleTable(){
 --------------------------------------------------------------------- */
 function renderReport(){
   const el = document.getElementById('panel-report');
-  if(state.people.length===0){
+  const ctx = currentViewContext();
+  if(ctx.people.length===0){
     el.innerHTML = `<div class="card"><div class="empty-state"><strong>Nothing to report yet</strong>Add people to the roster and generate a schedule.</div></div>`;
     return;
   }
-  const hasSchedule = Object.keys(state.assignment).length>0 || Object.keys(state.locks).length>0;
+  const hasSchedule = Object.keys(ctx.assignment).length>0 || Object.keys(ctx.locks).length>0;
+  // Admin-only comparison against the immediately preceding period, shown only
+  // while looking at the live/current period (a past period compares to
+  // nothing) — depends on periodsArchive, which only admins load/can read.
+  const lastPeriod = (effectiveAdminView() && ctx.editable && state.periodsArchive.length) ? state.periodsArchive[0] : null;
+  function lastPeriodCell(p, service){
+    if(!lastPeriod) return '';
+    const prevPerson = (lastPeriod.people||[]).find(x=>x.id===p.id);
+    if(!prevPerson) return `<div class="hint" style="margin-top:2px;">Last period: not on roster</div>`;
+    if(!prevPerson.services.includes(service)) return '';
+    const prevBlocks = computeBlocksForConfig(lastPeriod);
+    const prevAssigned = prevBlocks.filter(b=>b.service===service && (lastPeriod.assignment[b.key]||lastPeriod.locks[b.key])===p.id).length;
+    const prevReq = Object.entries(prevPerson.blockStatus||{}).filter(([k,v])=>v==='requested' && k.startsWith(service+'-')).length;
+    const prevTarget = (prevPerson.targetWeeks||{})[service];
+    return `<div class="hint" style="margin-top:2px;">Last period (${esc(lastPeriod.label||'')}): ${prevReq} req → ${prevAssigned} given${prevTarget!=null?` (target ${prevTarget})`:''}</div>`;
+  }
   function serviceCell(p, service){
     if(!p.services.includes(service)) return '<span class="hint">—</span>';
-    const assignedThis = state.blocks.filter(b=>b.service===service && effectiveAssignment(b.key)===p.id);
+    const assignedThis = ctx.blocks.filter(b=>b.service===service && ctxAssignment(ctx,b.key)===p.id);
     const reqTotal = Object.entries(p.blockStatus).filter(([k,v])=>v==='requested' && k.startsWith(service+'-')).length;
     const reqSat = assignedThis.filter(b=>p.blockStatus[b.key]==='requested').length;
     const target = p.targetWeeks[service];
     const delta = target!=null ? assignedThis.length-target : null;
     return `<div><span class="mono">${reqTotal||0} req → ${assignedThis.length} given</span>${reqTotal?` <span class="hint">(${reqSat} of ${reqTotal} honored)</span>`:''}</div>`
-      + `<div class="hint">target ${target==null?'—':target}${delta!=null&&delta!==0?` <span class="pill ${delta>0?'pill-warn':'pill-bad'}">${delta>0?'+':''}${delta}</span>`:delta===0?' <span class="pill pill-good">met</span>':''}</div>`;
+      + `<div class="hint">target ${target==null?'—':target}${delta!=null&&delta!==0?` <span class="pill ${delta>0?'pill-warn':'pill-bad'}">${delta>0?'+':''}${delta}</span>`:delta===0?' <span class="pill pill-good">met</span>':''}</div>`
+      + lastPeriodCell(p, service);
   }
   el.innerHTML = `<div class="card">
     <h2>Per-person outcome</h2>
@@ -1747,13 +2025,13 @@ function renderReport(){
     ${hasSchedule?`<div class="table-wrap"><table>
       <thead><tr><th>Name</th><th>APS</th><th>PCS</th><th>Weeks</th></tr></thead>
       <tbody>
-        ${state.people.map(p=>{
-          const assigned = state.blocks.filter(b=>effectiveAssignment(b.key)===p.id);
+        ${ctx.people.map(p=>{
+          const assigned = ctx.blocks.filter(b=>ctxAssignment(ctx,b.key)===p.id);
           return `<tr class="hoverable">
             <td>${esc(p.name)}</td>
             <td>${serviceCell(p,'APS')}</td>
             <td>${serviceCell(p,'PCS')}</td>
-            <td><div class="chip-row">${assigned.map(b=>`<span class="chip">${b.service} ${fmtShort(b.start)}${state.locks[b.key]?' 📌':''}</span>`).join('')||'<span class="hint">none</span>'}</div></td>
+            <td><div class="chip-row">${assigned.map(b=>`<span class="chip">${b.service} ${fmtShort(b.start)}${ctx.locks[b.key]?' 📌':''}</span>`).join('')||'<span class="hint">none</span>'}</div></td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1801,6 +2079,26 @@ function applyRoleToChrome(){
   document.getElementById('whoami').textContent = state.auth.user ? state.auth.user.email : '';
   const activeTab = document.querySelector('.tab.active');
   if(!adminView && activeTab && activeTab.dataset.tab==='setup') switchTab('roster');
+
+  // Period selector — admin-only; lets them browse archived periods read-only.
+  const periodSel = document.getElementById('periodSelect');
+  periodSel.hidden = !state.auth.isAdmin;
+  if(state.auth.isAdmin){
+    periodSel.innerHTML = `<option value="">Current period</option>` +
+      state.periodsArchive.map(p=>`<option value="${esc(p.id)}">${esc(p.label||p.id)}</option>`).join('');
+    periodSel.value = state.viewingPeriod ? state.viewingPeriod.id : '';
+    periodSel.onchange = ()=>{
+      const id = periodSel.value;
+      state.viewingPeriod = id ? (state.periodsArchive.find(p=>p.id===id) || null) : null;
+      renderAll();
+    };
+  }
+  const banner = document.getElementById('periodBanner');
+  banner.hidden = !state.viewingPeriod;
+  if(state.viewingPeriod){
+    document.getElementById('periodBannerText').textContent = `Viewing archived period: ${state.viewingPeriod.label || state.viewingPeriod.id} — read-only.`;
+    document.getElementById('btnBackToCurrent').onclick = ()=>{ state.viewingPeriod = null; renderAll(); };
+  }
 }
 
 function renderAll(){
@@ -1894,7 +2192,11 @@ async function bootForUser(user){
     }
     await withTimeout(loadAllData(), DB_TIMEOUT_MS, timeoutMsg);
     await refreshRole();
-    if(state.auth.isAdmin) await withTimeout(loadAdmins(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
+    await withTimeout(loadComments(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
+    if(state.auth.isAdmin){
+      await withTimeout(loadAdmins(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
+      await withTimeout(loadPeriodsArchive(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
+    }
     rebuildBlocks();
     document.getElementById('loadingScreen').hidden = true;
     document.querySelector('.app').hidden = false;
