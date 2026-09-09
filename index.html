@@ -136,6 +136,12 @@ tr:last-child td{ border-bottom:none; }
 .table-wrap table{ min-width:560px; }
 tr.unfilled td{ background:var(--bad-soft); }
 tr.hoverable:hover td{ background:var(--surface-2); }
+/* Wanted/Available cells in the schedule table — a name list (or "N wanted"
+ * count once it's long) that doubles as a button opening the assign-from-
+ * list modal; dotted underline hints it's clickable without looking like a
+ * full button. */
+.status-link{ appearance:none; border:none; background:none; padding:0; margin:0; font:inherit; color:inherit; cursor:pointer; text-decoration:underline; text-decoration-style:dotted; text-decoration-color:var(--ink-faint); text-underline-offset:2px; text-align:left; }
+.status-link:hover{ color:var(--accent); text-decoration-color:var(--accent); }
 
 .people-list{ display:flex; flex-direction:column; gap:10px; }
 .person-card{ display:flex; align-items:center; justify-content:space-between; gap:14px; background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); padding:13px 16px; }
@@ -1545,6 +1551,7 @@ function renderModal(){
   if(state.modal.mode==='import') renderImportModal();
   else if(state.modal.mode==='closePeriod') renderClosePeriodModal();
   else if(state.modal.mode==='reviewUploads') renderReviewUploadsModal();
+  else if(state.modal.mode==='assignWeek') renderAssignWeekModal();
   else renderPersonModal();
 }
 function renderPersonModal(){
@@ -2329,11 +2336,38 @@ function countRequestsSatisfied(ctx){
   }
   return n;
 }
-/** people defaults to the live roster (used by the export, which always
- * reflects the current period) — pass ctx.people explicitly to look at an
- * archived period instead. */
+/** Who's in a given status for a block: 'requested' (wanted), 'unavailable'
+ * (declined), or 'available' (everyone else eligible — i.e. blockStatus is
+ * unset/'neutral'). people defaults to the live roster (used by the export,
+ * which always reflects the current period) — pass ctx.people explicitly to
+ * look at an archived period instead. */
+function peopleByBlockStatus(b, status, people){
+  return (people||state.people).filter(p=>{
+    if(!p.services.includes(b.service)) return false;
+    const st = p.blockStatus[b.key] || 'neutral';
+    return status==='available' ? st==='neutral' : st===status;
+  });
+}
 function namesWithStatus(b, status, people){
-  return (people||state.people).filter(p=>p.services.includes(b.service) && p.blockStatus[b.key]===status).map(p=>p.name).join(', ');
+  return peopleByBlockStatus(b, status, people).map(p=>p.name).join(', ');
+}
+/** Wanted/Available/Declined cell: a plain name list once there are only a
+ * few, else a "N wanted"/"N available"/"N declined" count with the full
+ * list on hover (title attr). Wanted and Available are also a button that
+ * opens a quick "assign this person" list — clicking a name there is much
+ * faster than hunting them down in the Assigned-to dropdown; Declined never
+ * gets that, since assigning someone who turned the week down is never the
+ * point of showing it. */
+function renderWeekStatusCell(b, status, ctx, label){
+  const people = peopleByBlockStatus(b, status, ctx.people);
+  if(people.length===0) return '<td class="hint">—</td>';
+  const names = people.map(p=>esc(p.name)).join(', ');
+  const collapsed = people.length>3;
+  const text = collapsed ? `${people.length} ${label.toLowerCase()}` : names;
+  const titleAttr = collapsed ? ` title="${names}"` : '';
+  const clickable = (status==='requested'||status==='available') && effectiveAdminView() && ctx.editable;
+  if(!clickable) return `<td class="hint"${titleAttr}>${text}</td>`;
+  return `<td class="hint"><button type="button" class="status-link" data-assign-key="${b.key}" data-assign-status="${status}"${titleAttr}>${text}</button></td>`;
 }
 function renderScheduleTable(ctx){
   const card = document.getElementById('scheduleTableCard');
@@ -2341,7 +2375,7 @@ function renderScheduleTable(ctx){
   if(ctx.blocks.length===0){ card.innerHTML=''; return; }
   const hasSchedule = Object.keys(ctx.assignment).length>0 || Object.keys(ctx.locks).length>0;
   card.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Declined</th><th>Assigned to</th></tr></thead>
+    <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Available</th><th>Declined</th><th>Assigned to</th></tr></thead>
     <tbody>
       ${ctx.blocks.map(b=>{
         const pid = ctxAssignment(ctx,b.key);
@@ -2353,14 +2387,14 @@ function renderScheduleTable(ctx){
         // disappears out from under the admin; it's just labeled so they see it.
         let eligiblePeople = ctx.people.filter(person=>person.services.includes(b.service) && person.blockStatus[b.key]!=='unavailable');
         if(p && !eligiblePeople.some(person=>person.id===p.id)) eligiblePeople = [...eligiblePeople, p];
-        const wanted = namesWithStatus(b,'requested',ctx.people), declined = namesWithStatus(b,'unavailable',ctx.people);
         const options = `<option value="">${hasSchedule?'— unfilled —':'— solver decides —'}</option>` + eligiblePeople.map(person=>`<option value="${person.id}" ${pid===person.id?'selected':''}>${esc(person.name)}${person.blockStatus[b.key]==='unavailable'?' (marked unavailable)':''}</option>`).join('');
         return `<tr class="${hasSchedule && !p ? 'unfilled':'hoverable'}">
           <td><span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>${b.holidayWeek?' <span class="pill pill-neutral" title="Holiday week">holiday</span>':''}</td>
           <td class="mono">${fmtShort(b.start)} – ${fmtShort(b.end)}</td>
           <td class="mono" style="color:var(--ink-faint);">${fmtShort(b.postcall)}${b.postcallShifted?' <span class="hint" title="Normally '+fmtShort(b.rawPostcall)+'">(moved)</span>':''}</td>
-          <td class="hint">${esc(wanted)||'—'}</td>
-          <td class="hint">${esc(declined)||'—'}</td>
+          ${renderWeekStatusCell(b,'requested',ctx,'Wanted')}
+          ${renderWeekStatusCell(b,'available',ctx,'Available')}
+          ${renderWeekStatusCell(b,'unavailable',ctx,'Declined')}
           <td>
             <div class="row gap-8" style="flex-wrap:nowrap;">
               ${effectiveAdminView() && ctx.editable
@@ -2374,9 +2408,57 @@ function renderScheduleTable(ctx){
       }).join('')}
     </tbody>
   </table></div>`;
+  card.querySelectorAll('[data-assign-key]').forEach(btn=> btn.onclick = ()=> openAssignWeekModal(btn.dataset.assignKey, btn.dataset.assignStatus));
   card.querySelectorAll('[data-lock-key]').forEach(sel=> sel.onchange = ()=>{
     const key = sel.dataset.lockKey, val = sel.value;
     if(val){ state.locks[key] = val; } else { delete state.locks[key]; }
+    renderSchedule();
+    persistSchedule(); // background; never blocks the UI
+  });
+}
+
+/* ---- Assign-from-list modal: a quick-pick shortcut off the Wanted/
+   Available cells in the schedule table, so pinning one of them to a week
+   doesn't mean hunting them down in the (possibly long) Assigned-to
+   dropdown. Shares the person-modal overlay/dialog like the other small
+   modals above. ---- */
+function openAssignWeekModal(blockKey, status){
+  const ctx = currentViewContext();
+  if(!ctx.editable || !effectiveAdminView()) return;
+  state.modal = { mode:'assignWeek', blockKey, status };
+  document.getElementById('personModalOverlay').hidden = false;
+  document.addEventListener('keydown', onModalKeydown);
+  renderModal();
+}
+function renderAssignWeekModal(){
+  const dialog = document.getElementById('personModalDialog');
+  const m = state.modal;
+  const ctx = currentViewContext();
+  const b = ctx.blocks.find(x=>x.key===m.blockKey);
+  if(!b){ closePersonModal(); return; }
+  const currentPid = ctxAssignment(ctx, b.key);
+  const people = peopleByBlockStatus(b, m.status, ctx.people);
+  const label = m.status==='requested' ? 'people who wanted this week' : 'people available this week';
+  dialog.innerHTML = `
+    <div class="row between" style="margin-bottom:6px;">
+      <h2>Assign this week</h2>
+      <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
+    </div>
+    <div class="desc">
+      <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
+      ${fmtShort(b.start)} – ${fmtShort(b.end)} · ${label}
+    </div>
+    <div class="block-list" style="margin-top:12px;">
+      ${people.map(p=>`<div class="block-row">
+        <span class="dates" style="flex:1 1 auto;">${esc(p.name)}${p.blockStatus[b.key]==='requested'?' <span class="pill pill-good">requested</span>':''}</span>
+        ${p.id===currentPid ? '<span class="pill pill-neutral">currently assigned</span>' : `<button class="btn btn-sm" data-assign-person="${p.id}">Assign</button>`}
+      </div>`).join('')}
+    </div>
+  `;
+  document.getElementById('btnCloseModal').onclick = closePersonModal;
+  dialog.querySelectorAll('[data-assign-person]').forEach(btn=> btn.onclick = ()=>{
+    state.locks[b.key] = btn.dataset.assignPerson;
+    closePersonModal();
     renderSchedule();
     persistSchedule(); // background; never blocks the UI
   });
