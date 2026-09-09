@@ -904,10 +904,20 @@ function runSolver(){
   return { assignment, score: bestScore };
 }
 
+/** Explains why a week is unfilled — actually checks each eligible person's
+ * current assignments against this week's conflict set (state.conflicts)
+ * rather than assuming a conflict is the reason just because the week is
+ * empty; the solver's randomized search can also just leave a fillable
+ * week unfilled, especially with a lot of manual pins in play. */
 function unfilledReason(b){
   const eligible = state.people.filter(p=>isEligible(p,b));
   if(eligible.length===0) return 'No one on the roster is eligible for this week (service, availability, or restrict-to-requested).';
-  return 'Everyone eligible already has a conflicting assignment within the rest window.';
+  const conflictKeys = state.conflicts ? state.conflicts.get(b.key) : null;
+  const blocked = conflictKeys && conflictKeys.size
+    ? eligible.filter(p=>[...conflictKeys].some(k=>effectiveAssignment(k)===p.id))
+    : [];
+  if(blocked.length===eligible.length) return 'Everyone eligible already has a conflicting assignment within the rest window.';
+  return 'Eligible people are free for this week, but the solver left it unfilled — try Regenerate, or assign someone manually.';
 }
 
 /* ---------------------------------------------------------------------
@@ -2331,9 +2341,13 @@ function renderScheduleTable(ctx){
         const locked = !!ctx.locks[b.key];
         const p = pid ? ctx.people.find(x=>x.id===pid) : null;
         const isReq = p && p.blockStatus[b.key]==='requested';
-        const eligiblePeople = ctx.people.filter(person=>person.services.includes(b.service));
+        // Weeks someone marked unavailable don't offer them as a pick — except the
+        // person already assigned there, so an existing assignment never silently
+        // disappears out from under the admin; it's just labeled so they see it.
+        let eligiblePeople = ctx.people.filter(person=>person.services.includes(b.service) && person.blockStatus[b.key]!=='unavailable');
+        if(p && !eligiblePeople.some(person=>person.id===p.id)) eligiblePeople = [...eligiblePeople, p];
         const wanted = namesWithStatus(b,'requested',ctx.people), declined = namesWithStatus(b,'unavailable',ctx.people);
-        const options = `<option value="">${hasSchedule?'— unfilled —':'— solver decides —'}</option>` + eligiblePeople.map(person=>`<option value="${person.id}" ${pid===person.id?'selected':''}>${esc(person.name)}</option>`).join('');
+        const options = `<option value="">${hasSchedule?'— unfilled —':'— solver decides —'}</option>` + eligiblePeople.map(person=>`<option value="${person.id}" ${pid===person.id?'selected':''}>${esc(person.name)}${person.blockStatus[b.key]==='unavailable'?' (marked unavailable)':''}</option>`).join('');
         return `<tr class="${hasSchedule && !p ? 'unfilled':'hoverable'}">
           <td><span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>${b.holidayWeek?' <span class="pill pill-neutral" title="Holiday week">holiday</span>':''}</td>
           <td class="mono">${fmtShort(b.start)} – ${fmtShort(b.end)}</td>
