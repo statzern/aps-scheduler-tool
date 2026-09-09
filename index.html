@@ -1686,8 +1686,17 @@ function renderPersonModal(){
       catch(err){ toast(`Couldn't read ${file.name}: ${err.message}`); return; }
       const parsed = parseRequestWorkbook(wb, file.name.replace(/\.xlsx$/i,'').trim());
       if(parsed.error){ toast(`${file.name}: ${parsed.error}`); return; }
-      syncDraftFields(); // capture any in-progress typed edits before this overwrites and re-renders the form
       const svc = parsed.service;
+      const tooLarge = buf.byteLength > MAX_UPLOAD_BYTES;
+      // Ask before silently replacing a file already on record for this service —
+      // only when there's actually a replacement to store (a too-large file can't
+      // take its place, so the old one is left alone and there's nothing to confirm).
+      const existingUploads = state.uploads.filter(u=>u.personId===p.id && u.service===svc);
+      if(!tooLarge && existingUploads.length && !confirm(`${p.name||'This person'} already has a request file on file for ${svc} (${existingUploads[0].filename}). Replace it with ${file.name}?`)){
+        toast('Kept the existing file — nothing changed.');
+        return;
+      }
+      syncDraftFields(); // capture any in-progress typed edits before this overwrites and re-renders the form
       // Tracked per service, so an APS file and a PCS file for the same person
       // coexist — attaching one never touches the other's already-applied weeks
       // (nobody covers both services the same week, so the key prefixes never overlap).
@@ -1702,8 +1711,8 @@ function renderPersonModal(){
         else if(r.guess!=='neutral') p.blockStatus[r.block.key] = r.guess;
       }
       if(parsed.targetGuess!=null) p.targetWeeks[svc] = parsed.targetGuess;
-      const tooLarge = buf.byteLength > MAX_UPLOAD_BYTES;
-      m.serviceAttachments[svc] = { filename:file.name, size:buf.byteLength, base64: tooLarge?null:arrayBufferToBase64(buf), tooLarge, unclearKeys:unclear, before };
+      m.serviceAttachments[svc] = { filename:file.name, size:buf.byteLength, base64: tooLarge?null:arrayBufferToBase64(buf), tooLarge, unclearKeys:unclear, before,
+        replaceUploadIds: existingUploads.map(u=>u.id) };
       toast(`Applied ${file.name} (${svc})${unclear.length?` — ${unclear.length} week(s) need review (highlighted below)`:''}. Save to keep it.`);
       renderPersonModal();
     };
@@ -1748,6 +1757,7 @@ function renderPersonModal(){
       const kept = [], skipped = [];
       for(const [svc, att] of Object.entries(m.serviceAttachments)){
         if(att.base64){
+          for(const oldId of (att.replaceUploadIds||[])){ state.uploads = state.uploads.filter(u=>u.id!==oldId); persistDeleteUpload(oldId); } // background
           const uploadId = uid();
           const uploadDoc = { personId:personDoc.id, personName:personDoc.name, filename:att.filename, service:svc,
             uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:att.size, data:att.base64 };
@@ -2090,6 +2100,7 @@ function processNextImportFile(){
       queueRemaining: state.importQueue.length,
       name, targetWeeks: parsed.targetGuess!=null?parsed.targetGuess:'',
       existingId: existing?existing.id:null,
+      autoMatchedId: existing?existing.id:null, // remembered separately so the hint text can say whether the dropdown below reflects a guess or a deliberate pick
       rows: parsed.weekRows.map(r=>({ block:r.block, rawText:r.rawText, guess:r.guess, selected: r.guess==='unclear' ? 'neutral' : r.guess })),
       fileSize: buf.byteLength, fileTooLarge,
       fileBase64: fileTooLarge ? null : arrayBufferToBase64(buf)
@@ -2111,7 +2122,14 @@ function renderImportModal(){
       <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
     </div>
     ${m.queueRemaining>0?`<div class="hint" style="margin-bottom:12px;">${m.queueRemaining} more file(s) queued after this one.</div>`:''}
-    ${m.existingId?`<div class="pill pill-warn" style="margin-bottom:12px;">Matches existing roster entry — this will update them, not create a duplicate</div>`:''}
+    <div class="field" style="margin-bottom:12px;">
+      <label for="impPersonSelect">Attach to</label>
+      <select class="select" id="impPersonSelect">
+        <option value="__new__" ${!m.existingId?'selected':''}>— Create new person —</option>
+        ${state.people.slice().sort((a,b)=>a.name.localeCompare(b.name)).map(p=>`<option value="${p.id}" ${m.existingId===p.id?'selected':''}>${esc(p.name)}</option>`).join('')}
+      </select>
+      <span class="hint">${m.autoMatchedId ? 'Auto-matched by name from the file — change if this isn\'t right.' : 'No existing roster match found by name — pick one, or leave as new.'}</span>
+    </div>
     <div class="grid-3">
       <div class="field"><label for="impName">Name</label><input class="input" id="impName" value="${esc(m.name)}"></div>
       <div class="field"><label>Service (detected)</label><div style="padding-top:6px;"><span class="badge badge-${m.service.toLowerCase()}"><span class="badge-dot"></span>${m.service}</span></div></div>
@@ -2149,6 +2167,12 @@ function renderImportModal(){
   `;
   document.getElementById('btnCloseModal').onclick = closePersonModal;
   document.getElementById('btnSkipFile').onclick = ()=> processNextImportFile();
+  document.getElementById('impPersonSelect').onchange = (e)=>{
+    const val = e.target.value;
+    m.existingId = val==='__new__' ? null : val;
+    if(m.existingId){ const person = state.people.find(p=>p.id===m.existingId); if(person) m.name = person.name; }
+    renderImportModal();
+  };
   dialog.querySelectorAll('.segmented').forEach(seg=>{
     seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
       const key = seg.dataset.key, v = btn.dataset.v;
@@ -2158,10 +2182,18 @@ function renderImportModal(){
   });
   document.getElementById('btnSaveImport').onclick = ()=>{
     try{
+      const selectedId = document.getElementById('impPersonSelect').value;
       const name = document.getElementById('impName').value.trim() || m.filename.replace(/\.xlsx$/i,'') || 'Unnamed';
       const targetVal = document.getElementById('impTarget').value;
       const targetWeeks = targetVal===''? null : Number(targetVal);
-      let person = m.existingId ? state.people.find(p=>p.id===m.existingId) : null;
+      const existingPerson = selectedId==='__new__' ? null : state.people.find(p=>p.id===selectedId);
+      // Ask before silently replacing a file already on record for this person+service.
+      const existingUploads = existingPerson ? state.uploads.filter(u=>u.personId===existingPerson.id && u.service===m.service) : [];
+      if(m.fileBase64 && existingUploads.length && !confirm(`${existingPerson.name} already has a request file on file for ${m.service} (${existingUploads[0].filename}). Replace it with ${m.filename}?`)){
+        toast('Kept the existing file — nothing changed.');
+        return;
+      }
+      let person = existingPerson;
       if(!person){ person = normalizePerson({ id:uid(), name, services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }); state.people.push(person); }
       person.name = name;
       if(!person.services.includes(m.service)) person.services = [...person.services, m.service];
@@ -2172,16 +2204,17 @@ function renderImportModal(){
       }
       persistPerson(person); // background; never blocks moving to the next file
       if(m.fileBase64){
+        for(const old of existingUploads){ state.uploads = state.uploads.filter(u=>u.id!==old.id); persistDeleteUpload(old.id); } // background
         const uploadId = uid();
         const uploadDoc = { personId:person.id, personName:person.name, filename:m.filename, service:m.service,
           uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:m.fileSize, data:m.fileBase64 };
         state.uploads.unshift({ id:uploadId, ...uploadDoc });
         persistUpload(uploadId, uploadDoc); // background
-        toast(`Saved ${name}.`);
+        toast(`Saved ${person.name}.`);
       } else if(m.fileTooLarge){
-        toast(`Saved ${name}. (Couldn't keep a copy of the file — ${prettyBytes(m.fileSize)} is over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.)`);
+        toast(`Saved ${person.name}. (Couldn't keep a copy of the file — ${prettyBytes(m.fileSize)} is over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.)`);
       } else {
-        toast(`Saved ${name}.`);
+        toast(`Saved ${person.name}.`);
       }
       processNextImportFile();
     }catch(e){ toast('Something went wrong saving this import: '+e.message); console.error(e); }
