@@ -2245,36 +2245,23 @@ function renderImportModal(){
     }catch(e){ toast('Something went wrong saving this import: '+e.message); console.error(e); }
   };
 }
+/** Just the assignments, one sheet per service — nothing else (no post-call,
+ * holidays, requests, or rollups). Always covers the whole schedule, not
+ * whatever the on-screen service filter happens to be set to. */
 async function exportScheduleXlsx(){
   if(typeof XLSX==='undefined'){ toast('Spreadsheet library failed to load.'); return; }
-  const rows = [['Service','Week #','Start','End','Post-call','Holiday','Assigned to','Wanted (Yes)','Declined (No)']];
-  let weekNum = {APS:0, PCS:0};
-  for(const b of state.blocks){
-    weekNum[b.service]++;
-    const pid = effectiveAssignment(b.key);
-    const p = pid ? state.people.find(x=>x.id===pid) : null;
-    rows.push([b.service, weekNum[b.service], fmtLong(b.start), fmtLong(b.end), fmtLong(b.postcall)+(b.postcallShifted?` (moved from ${fmtLong(b.rawPostcall)})`:''),
-      b.holidayWeek?'HOLIDAY':'', p ? p.name+(state.locks[b.key]?' (pinned)':'') : 'UNFILLED', namesWithStatus(b,'requested',state.people), namesWithStatus(b,'unavailable',state.people)]);
-  }
-  const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [{wch:8},{wch:7},{wch:20},{wch:20},{wch:26},{wch:10},{wch:22},{wch:30},{wch:30}];
-
-  const rollup = [['Name','APS Requested','APS Given','APS Target','PCS Requested','PCS Given','PCS Target']];
-  for(const p of state.people){
-    const cell = service => {
-      if(!p.services.includes(service)) return ['','',''];
-      const assignedThis = state.blocks.filter(b=>b.service===service && effectiveAssignment(b.key)===p.id);
-      const reqTotal = Object.entries(p.blockStatus).filter(([k,v])=>v==='requested' && k.startsWith(service+'-')).length;
-      return [reqTotal, assignedThis.length, p.targetWeeks[service]==null?'':p.targetWeeks[service]];
-    };
-    rollup.push([p.name, ...cell('APS'), ...cell('PCS')]);
-  }
-  const wsRollup = XLSX.utils.aoa_to_sheet(rollup);
-  wsRollup['!cols'] = [{wch:20},{wch:13},{wch:10},{wch:11},{wch:13},{wch:10},{wch:11}];
-
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, 'Schedule');
-  XLSX.utils.book_append_sheet(wb, wsRollup, 'Requested vs Given');
+  for(const service of ['APS','PCS']){
+    const rows = [['Week','Assigned to']];
+    for(const b of state.blocks.filter(b=>b.service===service)){
+      const pid = effectiveAssignment(b.key);
+      const p = pid ? state.people.find(x=>x.id===pid) : null;
+      rows.push([`${fmtLong(b.start)} – ${fmtLong(b.end)}`, p ? p.name : 'UNFILLED']);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws['!cols'] = [{wch:34},{wch:24}];
+    XLSX.utils.book_append_sheet(wb, ws, service);
+  }
   const out = XLSX.write(wb, {bookType:'xlsx', type:'array'});
   const blob = new Blob([out], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   downloadBlob(blob, 'schedule.xlsx');
@@ -2366,18 +2353,14 @@ function countRequestsSatisfied(ctx, blocks){
 }
 /** Who's in a given status for a block: 'requested' (wanted), 'unavailable'
  * (declined), or 'available' (everyone else eligible — i.e. blockStatus is
- * unset/'neutral'). people defaults to the live roster (used by the export,
- * which always reflects the current period) — pass ctx.people explicitly to
- * look at an archived period instead. */
+ * unset/'neutral'). people defaults to the live roster — pass ctx.people
+ * explicitly to look at an archived period instead. */
 function peopleByBlockStatus(b, status, people){
   return (people||state.people).filter(p=>{
     if(!p.services.includes(b.service)) return false;
     const st = p.blockStatus[b.key] || 'neutral';
     return status==='available' ? st==='neutral' : st===status;
   });
-}
-function namesWithStatus(b, status, people){
-  return peopleByBlockStatus(b, status, people).map(p=>p.name).join(', ');
 }
 /** Wanted/Available/Declined cell: a plain name list once there are only a
  * few, else a "N wanted"/"N available"/"N declined" count with the full
