@@ -305,7 +305,7 @@ details.filter-card .filter-count{ font-weight:400; color:var(--ink-soft); font-
     <button class="tab active" data-tab="setup" data-admin-only role="tab">Setup</button>
     <button class="tab" data-tab="roster" role="tab"><span id="rosterTabLabel">Roster &amp; Requests</span> <span class="count" id="rosterCount"></span></button>
     <button class="tab" data-tab="schedule" role="tab">Schedule</button>
-    <button class="tab" data-tab="report" role="tab">Report</button>
+    <button class="tab" data-tab="report" data-admin-only role="tab">Report</button>
   </div>
 
   <div id="panel-setup" class="panel"></div>
@@ -2386,8 +2386,12 @@ function renderScheduleTable(ctx, blocks){
   if(ctx.blocks.length===0){ card.innerHTML=''; return; }
   if(blocks.length===0){ card.innerHTML = `<div class="empty-state" style="padding:32px;"><strong>Nothing matches this filter</strong>Turn on APS or PCS above to see weeks.</div>`; return; }
   const hasSchedule = Object.keys(ctx.assignment).length>0 || Object.keys(ctx.locks).length>0;
+  // Wanted/Available/Declined and the "pinned" (vs. solver-assigned) tag are
+  // admin-only detail — staff, and an admin previewing "My view", just see
+  // who's on for the week.
+  const isAdminView = effectiveAdminView();
   card.innerHTML = `<div class="table-wrap"><table>
-    <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Available</th><th>Declined</th><th>Assigned to</th></tr></thead>
+    <thead><tr><th>Service</th><th>Week</th><th>Post-call</th>${isAdminView?'<th>Wanted</th><th>Available</th><th>Declined</th>':''}<th>Assigned to</th></tr></thead>
     <tbody>
       ${blocks.map(b=>{
         const pid = ctxAssignment(ctx,b.key);
@@ -2404,15 +2408,13 @@ function renderScheduleTable(ctx, blocks){
           <td><span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>${b.holidayWeek?' <span class="pill pill-neutral" title="Holiday week">holiday</span>':''}</td>
           <td class="mono">${fmtShort(b.start)} – ${fmtShort(b.end)}</td>
           <td class="mono" style="color:var(--ink-faint);">${fmtShort(b.postcall)}${b.postcallShifted?' <span class="hint" title="Normally '+fmtShort(b.rawPostcall)+'">(moved)</span>':''}</td>
-          ${renderWeekStatusCell(b,'requested',ctx,'Wanted')}
-          ${renderWeekStatusCell(b,'available',ctx,'Available')}
-          ${renderWeekStatusCell(b,'unavailable',ctx,'Declined')}
+          ${isAdminView?`${renderWeekStatusCell(b,'requested',ctx,'Wanted')}${renderWeekStatusCell(b,'available',ctx,'Available')}${renderWeekStatusCell(b,'unavailable',ctx,'Declined')}`:''}
           <td>
             <div class="row gap-8" style="flex-wrap:nowrap;">
-              ${effectiveAdminView() && ctx.editable
+              ${isAdminView && ctx.editable
                 ? `<select class="select" data-lock-key="${b.key}" style="max-width:180px;">${options}</select>`
                 : `<span>${p ? esc(p.name) : '<span class="hint">unfilled</span>'}</span>`}
-              ${locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
+              ${isAdminView && locked?'<span class="pill pill-warn" title="Pinned by hand — the solver will not change this">pinned</span>':(p&&isReq?'<span class="pill pill-good">requested</span>':'')}
             </div>
             ${!p && hasSchedule && ctx.editable ? `<div class="hint" style="margin-top:4px;">${esc(unfilledReason(b))}</div>` : ''}
           </td>
@@ -2544,7 +2546,7 @@ function toast(msg){
 window.addEventListener('error', (e)=>{ console.error(e.error||e.message); toast('Something went wrong: '+(e.error&&e.error.message||e.message)); });
 window.addEventListener('unhandledrejection', (e)=>{ console.error(e.reason); toast('Something went wrong: '+(e.reason&&e.reason.message||String(e.reason))); });
 function switchTab(name){
-  if(name==='setup' && !effectiveAdminView()) name = 'roster'; // Setup hidden in this view but guard anyway
+  if((name==='setup' || name==='report') && !effectiveAdminView()) name = 'roster'; // Setup/Report hidden in this view but guard anyway
   document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active', t.dataset.tab===name));
   ['setup','roster','schedule','report'].forEach(n=>{ document.getElementById('panel-'+n).hidden = n!==name; });
 }
@@ -2556,9 +2558,9 @@ document.querySelectorAll('#viewToggle .seg-btn').forEach(btn=> btn.onclick = ()
 });
 
 /** Show/hide chrome that depends on role and the current view: the Setup
- * tab and admin schedule controls follow effectiveAdminView() (real admin
- * status can still be toggled to the plain staff experience via "My
- * view"); the role badge and the view toggle itself always reflect the
+ * and Report tabs and admin schedule controls follow effectiveAdminView()
+ * (real admin status can still be toggled to the plain staff experience via
+ * "My view"); the role badge and the view toggle itself always reflect the
  * REAL underlying permission, so nobody loses track of what they actually
  * are — "My view" changes what the interface offers, never what Firestore
  * allows. */
@@ -2572,7 +2574,7 @@ function applyRoleToChrome(){
   toggle.querySelectorAll('.seg-btn').forEach(btn=> btn.classList.toggle('active', btn.dataset.view===state.viewMode));
   document.getElementById('whoami').textContent = state.auth.user ? state.auth.user.email : '';
   const activeTab = document.querySelector('.tab.active');
-  if(!adminView && activeTab && activeTab.dataset.tab==='setup') switchTab('roster');
+  if(!adminView && activeTab && (activeTab.dataset.tab==='setup' || activeTab.dataset.tab==='report')) switchTab('roster');
 
   // Period selector — admin-only; lets them browse archived periods read-only.
   const periodSel = document.getElementById('periodSelect');
