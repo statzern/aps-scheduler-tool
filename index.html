@@ -411,6 +411,7 @@ const state = {
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
   calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
   myRequestsFilters: null, // lazily created per person — see ensureMyRequestsFilters()
+  personModalFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true }, // shared across the admin person-edit modal, same as calendarFilters
   comments: {},          // personId -> {blockKey:'free text'} — private notes; own doc(s) for staff, all docs for admins. See personComments/ in Firestore.
   periodsArchive: [],    // admin-only: closed periods, newest first — see loadPeriodsArchive()
   viewingPeriod: null,   // an entry from periodsArchive while an admin is browsing history, else null (= live/current period)
@@ -1502,8 +1503,8 @@ function renderPeopleList(){
    state.people (or the database) until "Save person" is clicked. ---- */
 function openPersonModal(existingPerson){
   state.modal = existingPerson
-    ? { mode:'person', isNew:false, id:existingPerson.id, draft: { ...existingPerson, services:[...existingPerson.services], blockStatus:{...existingPerson.blockStatus}, comments:{...(state.comments[existingPerson.id]||{})} } }
-    : { mode:'person', isNew:true, id:uid(), draft: { ...normalizePerson({ id:uid(), name:'', services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }), comments:{} } };
+    ? { mode:'person', isNew:false, id:existingPerson.id, draft: { ...existingPerson, services:[...existingPerson.services], blockStatus:{...existingPerson.blockStatus}, comments:{...(state.comments[existingPerson.id]||{})} }, serviceAttachments:{} }
+    : { mode:'person', isNew:true, id:uid(), draft: { ...normalizePerson({ id:uid(), name:'', services:[], targetWeeks:null, restrictToRequested:false, blockStatus:{} }), comments:{} }, serviceAttachments:{} };
   document.getElementById('personModalOverlay').hidden = false;
   document.addEventListener('keydown', onModalKeydown);
   renderModal();
@@ -1535,8 +1536,27 @@ function renderPersonModal(){
   if(!m) return;
   const p = m.draft;
   const relevantBlocks = state.blocks.filter(b=>p.services.includes(b.service));
-  const groups = groupByMonth(relevantBlocks);
-  const personUploadCount = state.uploads.filter(u=>u.personId===p.id).length;
+  // Every week flagged by any pending attachment, across services — a
+  // person on both APS and PCS can have one file for each in flight at once.
+  const allUnclearKeys = new Set(Object.values(m.serviceAttachments).flatMap(a=>a.unclearKeys));
+  const f = state.personModalFilters;
+  const filteredBlocks = relevantBlocks.filter(b=>{
+    if(allUnclearKeys.has(b.key)) return true; // always show weeks needing review after an attach, regardless of filters
+    if(!f.services[b.service]) return false;
+    if(f.holidaysOnly && !b.holidayWeek) return false;
+    const st = p.blockStatus[b.key] || 'neutral';
+    return f.statuses[st];
+  });
+  const groups = groupByMonth(filteredBlocks);
+  const fileStatusRows = p.services.map(svc=>{
+    const att = m.serviceAttachments[svc];
+    if(att) return `<div class="row between" style="margin-top:6px;gap:8px;">
+        <span class="hint">${svc}: applied <strong>${esc(att.filename)}</strong>${att.unclearKeys.length?` — ${att.unclearKeys.length} need review`:''}. Save to keep it.</span>
+        <button class="btn btn-sm btn-ghost" data-undo-service="${svc}">Undo</button>
+      </div>`;
+    const existingCount = state.uploads.filter(u=>u.personId===p.id && u.service===svc).length;
+    return `<div class="hint" style="margin-top:6px;">${svc}: ${existingCount?`${existingCount} file${existingCount>1?'s':''} on file`:'no file on file yet'}</div>`;
+  }).join('');
   dialog.innerHTML = `
     <div class="row between" style="margin-bottom:14px;">
       <h2>${m.isNew ? 'Add person' : 'Editing '+(esc(p.name)||'person')}</h2>
@@ -1563,22 +1583,45 @@ function renderPersonModal(){
     </div>
     <div class="row between" style="margin-top:16px;align-items:flex-start;border-top:1px dashed var(--line-strong);padding-top:14px;">
       <div>
-        <div class="field-label" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);">Request file</div>
-        <div class="hint" style="margin-top:4px;max-width:44ch;">${m.attachedFilename
-          ? `Applied <strong>${esc(m.attachedFilename)}</strong> below${m.importUnclearKeys&&m.importUnclearKeys.length?` — ${m.importUnclearKeys.length} week(s) need review (highlighted)`:''}. Save to keep it.`
-          : (personUploadCount ? `${personUploadCount} file${personUploadCount>1?'s':''} on file for this person.` : 'No request file on file yet.')}</div>
+        <div class="field-label" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);">Request files</div>
+        ${p.services.length ? fileStatusRows : '<div class="hint" style="margin-top:4px;">No file on file yet.</div>'}
+        <div class="hint" style="margin-top:6px;max-width:44ch;">One file per service — attaching a PCS file won't touch an already-attached APS file, and vice versa.</div>
       </div>
       <div class="row gap-8">
-        ${m.attachedFilename?`<button class="btn btn-sm btn-ghost" id="btnUndoImport">Undo</button>`:''}
-        <label class="btn btn-sm" style="cursor:pointer;">${personUploadCount||m.attachedFilename?'Replace .xlsx':'Attach .xlsx'}<input type="file" id="pImportFile" accept=".xlsx" style="display:none;"></label>
+        <label class="btn btn-sm" style="cursor:pointer;">Attach .xlsx<input type="file" id="pImportFile" accept=".xlsx" style="display:none;"></label>
       </div>
     </div>
+    ${relevantBlocks.length ? `
+    <details class="filter-card" id="pmFilterDetails" style="margin-top:16px;" ${f.uiOpen?'open':''}>
+      <summary>Filters <span class="filter-count">— ${filteredBlocks.length} of ${relevantBlocks.length} week(s) shown</span></summary>
+      <div class="row gap-8" style="flex-wrap:wrap;align-items:flex-start;">
+        ${p.services.length>1?`<div>
+          <div class="filter-group-label">Service</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="pmfAPS" ${f.services.APS?'checked':''}> APS</label>
+            <label class="checkbox-row"><input type="checkbox" id="pmfPCS" ${f.services.PCS?'checked':''}> PCS</label>
+          </div>
+        </div>`:''}
+        <div>
+          <div class="filter-group-label">Status</div>
+          <div class="row gap-8">
+            <label class="checkbox-row"><input type="checkbox" id="pmfAvail" ${f.statuses.neutral?'checked':''}> Available</label>
+            <label class="checkbox-row"><input type="checkbox" id="pmfReq" ${f.statuses.requested?'checked':''}> Requested</label>
+            <label class="checkbox-row"><input type="checkbox" id="pmfUnavail" ${f.statuses.unavailable?'checked':''}> Unavailable</label>
+          </div>
+        </div>
+        <div>
+          <div class="filter-group-label">Weeks</div>
+          <label class="checkbox-row"><input type="checkbox" id="pmfHolidays" ${f.holidaysOnly?'checked':''}> Holiday weeks only</label>
+        </div>
+      </div>
+    </details>` : ''}
     <div class="editor">
       <div class="row between" style="margin-bottom:8px;">
-        <strong style="font-size:13px;">Weeks (${relevantBlocks.length})</strong>
+        <strong style="font-size:13px;">Weeks (${filteredBlocks.length})</strong>
         <span class="hint">Available (default) · Requested · Unavailable</span>
       </div>
-      ${relevantBlocks.length===0 ? '<div class="empty-state">Check APS and/or PCS above to see weeks here.</div>' : `
+      ${relevantBlocks.length===0 ? '<div class="empty-state">Check APS and/or PCS above to see weeks here.</div>' : filteredBlocks.length===0 ? '<div class="empty-state">No weeks match these filters.</div>' : `
       <div class="block-list">
         ${groups.map(g=>`<div class="month-header">${g.label}</div>${g.items.map(b=>{
           const st = p.blockStatus[b.key] || 'neutral';
@@ -1587,8 +1630,7 @@ function renderPersonModal(){
             <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
             <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
           </div>`;
-          const flagged = !!(m.importUnclearKeys && m.importUnclearKeys.includes(b.key));
-          return blockRowHtml(b, seg, p.comments[b.key]||'', flagged);
+          return blockRowHtml(b, seg, p.comments[b.key]||'', allUnclearKeys.has(b.key));
         }).join('')}`).join('')}
       </div>`}
     </div>
@@ -1610,6 +1652,17 @@ function renderPersonModal(){
   };
   dialog.querySelector('#pAPS').onchange = ()=>{ syncDraftFields(); renderPersonModal(); };
   dialog.querySelector('#pPCS').onchange = ()=>{ syncDraftFields(); renderPersonModal(); };
+  const filterDetails = document.getElementById('pmFilterDetails');
+  if(filterDetails){
+    filterDetails.addEventListener('toggle', e=>{ f.uiOpen = e.target.open; });
+    const bindFilter = (id, apply)=>{ const elm=document.getElementById(id); if(elm) elm.onchange = e=>{ apply(e.target.checked); syncDraftFields(); renderPersonModal(); }; };
+    bindFilter('pmfAPS', v=>f.services.APS=v);
+    bindFilter('pmfPCS', v=>f.services.PCS=v);
+    bindFilter('pmfAvail', v=>f.statuses.neutral=v);
+    bindFilter('pmfReq', v=>f.statuses.requested=v);
+    bindFilter('pmfUnavail', v=>f.statuses.unavailable=v);
+    bindFilter('pmfHolidays', v=>f.holidaysOnly=v);
+  }
   dialog.querySelectorAll('.segmented').forEach(seg=>{
     seg.querySelectorAll('.seg-btn').forEach(btn=> btn.onclick = ()=>{
       const key = seg.dataset.key, v = btn.dataset.v;
@@ -1634,32 +1687,41 @@ function renderPersonModal(){
       const parsed = parseRequestWorkbook(wb, file.name.replace(/\.xlsx$/i,'').trim());
       if(parsed.error){ toast(`${file.name}: ${parsed.error}`); return; }
       syncDraftFields(); // capture any in-progress typed edits before this overwrites and re-renders the form
-      // One-level undo: snapshot what the file is about to change.
-      m.beforeImport = { services:[...p.services], blockStatus:{...p.blockStatus}, targetWeeks:{...p.targetWeeks} };
-      if(!p.services.includes(parsed.service)) p.services = [...p.services, parsed.service];
+      const svc = parsed.service;
+      // Tracked per service, so an APS file and a PCS file for the same person
+      // coexist — attaching one never touches the other's already-applied weeks
+      // (nobody covers both services the same week, so the key prefixes never overlap).
+      const prefix = svc+'-';
+      const before = { blockStatus:{}, target:p.targetWeeks[svc], hadService:p.services.includes(svc) };
+      for(const k of Object.keys(p.blockStatus)) if(k.startsWith(prefix)) before.blockStatus[k]=p.blockStatus[k];
+      if(!before.hadService) p.services = [...p.services, svc];
+      for(const k of Object.keys(p.blockStatus)) if(k.startsWith(prefix)) delete p.blockStatus[k];
       const unclear = [];
       for(const r of parsed.weekRows){
-        if(r.guess==='unclear'){ delete p.blockStatus[r.block.key]; unclear.push(r.block.key); }
-        else if(r.guess==='neutral'){ delete p.blockStatus[r.block.key]; }
-        else p.blockStatus[r.block.key] = r.guess;
+        if(r.guess==='unclear') unclear.push(r.block.key);
+        else if(r.guess!=='neutral') p.blockStatus[r.block.key] = r.guess;
       }
-      if(parsed.targetGuess!=null) p.targetWeeks[parsed.service] = parsed.targetGuess;
+      if(parsed.targetGuess!=null) p.targetWeeks[svc] = parsed.targetGuess;
       const tooLarge = buf.byteLength > MAX_UPLOAD_BYTES;
-      m.pendingUpload = { filename:file.name, service:parsed.service, size:buf.byteLength, base64: tooLarge?null:arrayBufferToBase64(buf), tooLarge };
-      m.attachedFilename = file.name;
-      m.importUnclearKeys = unclear;
-      toast(`Applied ${file.name}${unclear.length?` — ${unclear.length} week(s) need review (highlighted below)`:''}. Save to keep these changes.`);
+      m.serviceAttachments[svc] = { filename:file.name, size:buf.byteLength, base64: tooLarge?null:arrayBufferToBase64(buf), tooLarge, unclearKeys:unclear, before };
+      toast(`Applied ${file.name} (${svc})${unclear.length?` — ${unclear.length} week(s) need review (highlighted below)`:''}. Save to keep it.`);
       renderPersonModal();
     };
     reader.readAsArrayBuffer(file);
   };
-  const undoBtn = document.getElementById('btnUndoImport');
-  if(undoBtn) undoBtn.onclick = ()=>{
-    if(m.beforeImport){ p.services = m.beforeImport.services; p.blockStatus = m.beforeImport.blockStatus; p.targetWeeks = m.beforeImport.targetWeeks; }
-    m.pendingUpload = null; m.attachedFilename = null; m.importUnclearKeys = null; m.beforeImport = null;
+  dialog.querySelectorAll('[data-undo-service]').forEach(btn=> btn.onclick = ()=>{
+    const svc = btn.dataset.undoService;
+    const att = m.serviceAttachments[svc];
+    if(!att) return;
+    const prefix = svc+'-';
+    for(const k of Object.keys(p.blockStatus)) if(k.startsWith(prefix)) delete p.blockStatus[k];
+    Object.assign(p.blockStatus, att.before.blockStatus);
+    p.targetWeeks[svc] = att.before.target;
+    if(!att.before.hadService) p.services = p.services.filter(s=>s!==svc);
+    delete m.serviceAttachments[svc];
     toast('Reverted.');
     renderPersonModal();
-  };
+  });
   document.getElementById('btnSavePerson').onclick = ()=>{
     try{
       p.name = document.getElementById('pName').value.trim() || 'Unnamed';
@@ -1681,18 +1743,25 @@ function renderPersonModal(){
       state.comments[personDoc.id] = {...comments};
       persistPerson(personDoc); // background; never blocks the UI
       persistComments(personDoc.id, comments); // background; never blocks the UI
-      if(m.pendingUpload && m.pendingUpload.base64){
-        const uploadId = uid();
-        const uploadDoc = { personId:personDoc.id, personName:personDoc.name, filename:m.pendingUpload.filename, service:m.pendingUpload.service,
-          uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:m.pendingUpload.size, data:m.pendingUpload.base64 };
-        state.uploads.unshift({ id:uploadId, ...uploadDoc });
-        persistUpload(uploadId, uploadDoc); // background
-        toast('Person saved. Request file attached.');
-      } else if(m.pendingUpload && m.pendingUpload.tooLarge){
-        toast(`Person saved. (Couldn't keep a copy of ${m.pendingUpload.filename} — ${prettyBytes(m.pendingUpload.size)} is over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.)`);
-      } else {
-        toast('Person saved.');
+      // Each attached service's file (if any) is retained independently — a
+      // person on both APS and PCS gets both saved in the same click.
+      const kept = [], skipped = [];
+      for(const [svc, att] of Object.entries(m.serviceAttachments)){
+        if(att.base64){
+          const uploadId = uid();
+          const uploadDoc = { personId:personDoc.id, personName:personDoc.name, filename:att.filename, service:svc,
+            uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:att.size, data:att.base64 };
+          state.uploads.unshift({ id:uploadId, ...uploadDoc });
+          persistUpload(uploadId, uploadDoc); // background
+          kept.push(att.filename);
+        } else if(att.tooLarge){
+          skipped.push(`${att.filename} (${prettyBytes(att.size)})`);
+        }
       }
+      let msg = 'Person saved.';
+      if(kept.length) msg += ` ${kept.length} request file${kept.length>1?'s':''} attached.`;
+      if(skipped.length) msg += ` Couldn't keep a copy of ${skipped.join(', ')} — over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.`;
+      toast(msg);
       closePersonModal();
       renderPeopleList();
     }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
