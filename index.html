@@ -148,7 +148,20 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .modal-overlay{ position:fixed; inset:0; background:var(--backdrop); display:flex; align-items:flex-start; justify-content:center; padding:5vh 20px; z-index:200; overflow-y:auto; }
 .modal-overlay[hidden]{ display:none!important; }
 .modal-dialog{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); max-width:660px; width:100%; padding:24px; margin-bottom:5vh; }
+.modal-dialog.modal-wide{ max-width:1040px; }
 @media(max-width:720px){ .modal-overlay{ padding:0; align-items:stretch; } .modal-dialog{ max-width:none; border-radius:0; min-height:100%; margin-bottom:0; } }
+.uploads-layout{ display:grid; grid-template-columns:280px 1fr; gap:16px; align-items:start; }
+@media(max-width:720px){ .uploads-layout{ grid-template-columns:1fr; } }
+.uploads-list{ max-height:60vh; overflow-y:auto; border:1px solid var(--line); border-radius:9px; background:var(--bg); }
+.upload-row{ display:block; width:100%; text-align:left; border:none; background:none; padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line); font-family:inherit; color:inherit; }
+.upload-row:last-child{ border-bottom:none; }
+.upload-row:hover{ background:var(--surface-2); }
+.upload-row.active{ background:var(--aps-soft); }
+.upload-row .name{ font-weight:600; font-size:13px; }
+.upload-row .meta{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; }
+.xlsx-preview{ overflow:auto; max-height:56vh; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:8px; }
+.xlsx-preview table{ border-collapse:collapse; font-size:12.5px; }
+.xlsx-preview td, .xlsx-preview th{ border:1px solid var(--line); padding:4px 8px; white-space:nowrap; color:var(--ink); }
 .month-group{ margin-bottom:14px; }
 .month-header{ font-size:12px; font-weight:600; color:var(--ink-faint); text-transform:uppercase; letter-spacing:.05em; padding:8px 4px 6px; position:sticky; top:0; background:var(--surface); }
 .block-list{ max-height:420px; overflow-y:auto; border:1px solid var(--line); border-radius:9px; background:var(--bg); padding:4px 10px; }
@@ -163,6 +176,7 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .block-row-comment .input{ width:100%; padding:6px 9px; font-size:12.5px; }
 .period-banner{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; background:var(--warn-soft); color:var(--warn); border:1px solid var(--warn); border-radius:var(--radius); padding:10px 16px; margin-bottom:16px; font-size:13.5px; font-weight:500; }
 .comment-marker{ box-shadow:inset 0 -2px 0 var(--accent); }
+.block-row-flagged{ background:var(--warn-soft); border-radius:6px; }
 
 .segmented{ display:inline-flex; border:1px solid var(--line-strong); border-radius:7px; overflow:hidden; flex:none; }
 .seg-btn{ appearance:none; border:none; background:var(--surface); color:var(--ink-soft); padding:6px 10px; font-size:12px; font-weight:500; cursor:pointer; border-left:1px solid var(--line-strong); }
@@ -348,6 +362,30 @@ function downloadBlob(blob, filename){
   setTimeout(()=>URL.revokeObjectURL(url), 1000);
 }
 function uid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'id-'+Math.random().toString(36).slice(2)+Date.now()); }
+/** Chunked to avoid blowing the call stack on String.fromCharCode(...bytes)
+ * for larger files — see MAX_UPLOAD_BYTES below for the actual size cap. */
+function arrayBufferToBase64(buf){
+  const bytes = new Uint8Array(buf);
+  let binary = '';
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk) binary += String.fromCharCode.apply(null, bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+function base64ToArrayBuffer(b64){
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+function prettyBytes(n){
+  if(n<1024) return n+' B';
+  if(n<1024*1024) return (n/1024).toFixed(1)+' KB';
+  return (n/1024/1024).toFixed(2)+' MB';
+}
+/** Firestore documents cap out at 1MiB; base64 inflates raw bytes by ~37%.
+ * Kept well under that so the uploads doc (plus its other fields) never
+ * risks the limit — see the "uploads" collection in firestore.rules. */
+const MAX_UPLOAD_BYTES = 700*1024;
 
 /* ---------------------------------------------------------------------
    STATE
@@ -375,7 +413,8 @@ const state = {
   myRequestsFilters: null, // lazily created per person — see ensureMyRequestsFilters()
   comments: {},          // personId -> {blockKey:'free text'} — private notes; own doc(s) for staff, all docs for admins. See personComments/ in Firestore.
   periodsArchive: [],    // admin-only: closed periods, newest first — see loadPeriodsArchive()
-  viewingPeriod: null    // an entry from periodsArchive while an admin is browsing history, else null (= live/current period)
+  viewingPeriod: null,   // an entry from periodsArchive while an admin is browsing history, else null (= live/current period)
+  uploads: []            // admin-only: retained copies of imported request .xlsx files — see loadUploads()
 };
 function effectiveAssignment(key){ return state.locks[key] || state.assignment[key] || null; }
 function myEmail(){ return state.auth.user ? state.auth.user.email.toLowerCase() : null; }
@@ -586,9 +625,30 @@ async function persistClosePeriod(endingLabel, newStart, newEnd, newLabel){
   ));
   state.assignment = {}; state.locks = {}; state.scheduleMeta = null;
   await persistSchedule();
+  await Promise.all(state.uploads.map(u=>deleteDoc(doc(fsDb,'uploads',u.id))));
+  state.uploads = [];
   state.config.startDate = newStart; state.config.endDate = newEnd;
   state.config.editingOpen = true; state.config.periodLabel = newLabel;
   await persistConfig();
+}
+
+/* ---- Retained copies of imported request .xlsx files — admin-only, see
+   uploads/ in firestore.rules. Cleared whenever a period closes (above),
+   so this never needs to grow across periods. ---- */
+async function loadUploads(){
+  try{
+    const snap = await getDocs(collection(fsDb,'uploads'));
+    state.uploads = snap.docs.map(d=>({ id:d.id, ...d.data() }))
+      .sort((a,b)=>(b.uploadedAt||'').localeCompare(a.uploadedAt||''));
+  }catch(e){ console.error('loadUploads failed', e); state.uploads = []; }
+}
+async function persistUpload(id, uploadDoc){
+  try{ await setDoc(doc(fsDb,'uploads',id), uploadDoc); }
+  catch(e){ toast('Save failed: '+e.message); }
+}
+async function persistDeleteUpload(id){
+  try{ await deleteDoc(doc(fsDb,'uploads',id)); }
+  catch(e){ toast('Delete failed: '+e.message); }
 }
 
 /* ---------------------------------------------------------------------
@@ -1045,14 +1105,19 @@ function renderBlocksPreview(){
  * editable free-text note on its own full-width line below — used wherever a
  * person can annotate a week regardless of its status (see the comment-input
  * wiring in renderMyRequests/renderPersonModal). */
-function blockRowHtml(b, extra, comment){
+/** flagged: highlights the row and adds a "check this" pill — used right
+ * after attaching/replacing a request file in the person modal, for weeks
+ * whose answer text couldn't be confidently read as yes/no (see the file
+ * input wiring in renderPersonModal). */
+function blockRowHtml(b, extra, comment, flagged){
   const pcNote = b.postcallShifted
     ? ` <span class="pill pill-warn" title="Normally ${fmtShort(b.rawPostcall)} — moved off a weekend/holiday">moved from ${fmtShort(b.rawPostcall)}</span>`
     : '';
-  return `<div class="block-row">
+  return `<div class="block-row${flagged?' block-row-flagged':''}">
     <span class="badge badge-${b.service.toLowerCase()}"><span class="badge-dot"></span>${b.service}</span>
     <span class="dates">${fmtShort(b.start)} – ${fmtShort(b.end)}<span class="pc">Post-call ${fmtShort(b.postcall)}${pcNote}</span></span>
     ${b.holidayWeek?'<span class="pill pill-neutral">Holiday week</span>':''}
+    ${flagged?'<span class="pill pill-warn">check this</span>':''}
     ${extra?`<div class="block-row-controls">${extra}</div>`:''}
     ${comment!==undefined?`<div class="block-row-comment"><input class="input" type="text" maxlength="500" data-comment-key="${b.key}" placeholder="Add a comment (optional)" value="${esc(comment)}"></div>`:''}
   </div>`;
@@ -1364,7 +1429,8 @@ function renderRosterAdmin(){
       <div class="row between" style="margin-top:12px;">
         <div class="row gap-8">
           ${ctx.editable?`<button class="btn btn-sm btn-ghost" id="btnExportRoster">Backup: export roster (.xlsx)</button>
-          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>`:''}
+          <label class="btn btn-sm btn-ghost" style="cursor:pointer;">Backup: restore roster (.xlsx)<input type="file" id="fileImportBackup" accept=".xlsx" style="display:none;"></label>
+          <button class="btn btn-sm btn-ghost" id="btnReviewUploads">Review uploads${state.uploads.length?` (${state.uploads.length})`:''}</button>`:''}
         </div>
         <div class="segmented">
           <button class="seg-btn ${state.rosterView==='list'?'active':''}" id="btnViewList" style="${state.rosterView==='list'?'background:var(--surface-2);color:var(--ink);':''}">List view</button>
@@ -1379,6 +1445,7 @@ function renderRosterAdmin(){
     document.getElementById('btnExportRoster').onclick = exportRosterXlsx;
     document.getElementById('fileImportBackup').onchange = (e)=>{ if(e.target.files[0]) importRosterBackupXlsx(e.target.files[0]); e.target.value=''; };
     document.getElementById('fileImportRequests').onchange = (e)=>{ if(e.target.files.length) handleImportRequestFiles(e.target.files); e.target.value=''; };
+    document.getElementById('btnReviewUploads').onclick = ()=> openReviewUploadsModal();
   }
   document.getElementById('btnViewList').onclick = ()=>{ state.rosterView='list'; renderRosterAdmin(); };
   document.getElementById('btnViewCalendar').onclick = ()=>{ state.rosterView='calendar'; renderRosterAdmin(); };
@@ -1401,6 +1468,7 @@ function renderPeopleList(){
     const targetBits = p.services.filter(s=>p.targetWeeks[s]!=null).map(s=>`${s} target ${p.targetWeeks[s]} wk`).join(', ');
     const reqCount = Object.values(p.blockStatus).filter(v=>v==='requested').length;
     const unavailCount = Object.values(p.blockStatus).filter(v=>v==='unavailable').length;
+    const personUploadCount = state.uploads.filter(u=>u.personId===p.id).length;
     return `<div class="person-card">
       <div>
         <div class="name">${esc(p.name)||'<em style=\"color:var(--ink-faint)\">Unnamed</em>'} ${p.email?`<span class="hint mono" style="font-weight:400;">${esc(p.email)}</span>`:'<span class="pill pill-warn">no login linked</span>'}</div>
@@ -1412,6 +1480,7 @@ function renderPeopleList(){
         </div>
       </div>
       ${ctx.editable?`<div class="row gap-8">
+        ${personUploadCount?`<button class="btn btn-sm btn-ghost" data-view-xlsx="${p.id}">View .xlsx${personUploadCount>1?` (${personUploadCount})`:''}</button>`:''}
         <button class="btn btn-sm" data-edit="${p.id}">Edit</button>
         <button class="btn btn-sm btn-danger" data-del="${p.id}">Remove</button>
       </div>`:''}
@@ -1419,6 +1488,7 @@ function renderPeopleList(){
   }).join('')}</div>`;
   if(!ctx.editable) return;
   card.querySelectorAll('[data-edit]').forEach(btn=> btn.onclick = ()=> openPersonModal(state.people.find(x=>x.id===btn.dataset.edit)));
+  card.querySelectorAll('[data-view-xlsx]').forEach(btn=> btn.onclick = ()=> openReviewUploadsModal({ personId:btn.dataset.viewXlsx }));
   card.querySelectorAll('[data-del]').forEach(btn=> btn.onclick = ()=>{
     const p = state.people.find(x=>x.id===btn.dataset.del);
     if(!confirm(`Remove ${p.name||'this person'} from the roster?`)) return;
@@ -1443,11 +1513,20 @@ function closePersonModal(){
   document.getElementById('personModalOverlay').hidden = true;
   document.removeEventListener('keydown', onModalKeydown);
 }
-function onModalKeydown(e){ if(e.key==='Escape') closePersonModal(); }
+function onModalKeydown(e){
+  if(e.key==='Escape'){ closePersonModal(); return; }
+  if(state.modal && state.modal.mode==='reviewUploads' && (e.key==='ArrowLeft' || e.key==='ArrowRight')){
+    const active = document.activeElement;
+    if(active && ['INPUT','TEXTAREA'].includes(active.tagName)) return; // don't hijack typing in the search box
+    stepReviewUploads(e.key==='ArrowLeft' ? -1 : 1);
+  }
+}
 function renderModal(){
   if(!state.modal) return;
+  document.getElementById('personModalDialog').classList.toggle('modal-wide', state.modal.mode==='reviewUploads');
   if(state.modal.mode==='import') renderImportModal();
   else if(state.modal.mode==='closePeriod') renderClosePeriodModal();
+  else if(state.modal.mode==='reviewUploads') renderReviewUploadsModal();
   else renderPersonModal();
 }
 function renderPersonModal(){
@@ -1457,6 +1536,7 @@ function renderPersonModal(){
   const p = m.draft;
   const relevantBlocks = state.blocks.filter(b=>p.services.includes(b.service));
   const groups = groupByMonth(relevantBlocks);
+  const personUploadCount = state.uploads.filter(u=>u.personId===p.id).length;
   dialog.innerHTML = `
     <div class="row between" style="margin-bottom:14px;">
       <h2>${m.isNew ? 'Add person' : 'Editing '+(esc(p.name)||'person')}</h2>
@@ -1481,6 +1561,18 @@ function renderPersonModal(){
     <div class="row" style="margin-top:12px;">
       <label class="checkbox-row"><input type="checkbox" id="pRestrict" ${p.restrictToRequested?'checked':''}> Only ever schedule this person on weeks marked "requested" below</label>
     </div>
+    <div class="row between" style="margin-top:16px;align-items:flex-start;border-top:1px dashed var(--line-strong);padding-top:14px;">
+      <div>
+        <div class="field-label" style="font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);">Request file</div>
+        <div class="hint" style="margin-top:4px;max-width:44ch;">${m.attachedFilename
+          ? `Applied <strong>${esc(m.attachedFilename)}</strong> below${m.importUnclearKeys&&m.importUnclearKeys.length?` — ${m.importUnclearKeys.length} week(s) need review (highlighted)`:''}. Save to keep it.`
+          : (personUploadCount ? `${personUploadCount} file${personUploadCount>1?'s':''} on file for this person.` : 'No request file on file yet.')}</div>
+      </div>
+      <div class="row gap-8">
+        ${m.attachedFilename?`<button class="btn btn-sm btn-ghost" id="btnUndoImport">Undo</button>`:''}
+        <label class="btn btn-sm" style="cursor:pointer;">${personUploadCount||m.attachedFilename?'Replace .xlsx':'Attach .xlsx'}<input type="file" id="pImportFile" accept=".xlsx" style="display:none;"></label>
+      </div>
+    </div>
     <div class="editor">
       <div class="row between" style="margin-bottom:8px;">
         <strong style="font-size:13px;">Weeks (${relevantBlocks.length})</strong>
@@ -1495,7 +1587,8 @@ function renderPersonModal(){
             <button class="seg-btn ${st==='requested'?'active':''}" data-v="requested">Requested</button>
             <button class="seg-btn ${st==='unavailable'?'active':''}" data-v="unavailable">Unavailable</button>
           </div>`;
-          return blockRowHtml(b, seg, p.comments[b.key]||'');
+          const flagged = !!(m.importUnclearKeys && m.importUnclearKeys.includes(b.key));
+          return blockRowHtml(b, seg, p.comments[b.key]||'', flagged);
         }).join('')}`).join('')}
       </div>`}
     </div>
@@ -1528,6 +1621,45 @@ function renderPersonModal(){
     const key = inp.dataset.commentKey, v = inp.value;
     if(v.trim()==='') delete p.comments[key]; else p.comments[key] = v;
   });
+  document.getElementById('pImportFile').onchange = (e)=>{
+    const file = e.target.files[0];
+    e.target.value = '';
+    if(!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev)=>{
+      const buf = ev.target.result;
+      let wb;
+      try{ wb = XLSX.read(buf, {type:'array', cellDates:true}); }
+      catch(err){ toast(`Couldn't read ${file.name}: ${err.message}`); return; }
+      const parsed = parseRequestWorkbook(wb, file.name.replace(/\.xlsx$/i,'').trim());
+      if(parsed.error){ toast(`${file.name}: ${parsed.error}`); return; }
+      syncDraftFields(); // capture any in-progress typed edits before this overwrites and re-renders the form
+      // One-level undo: snapshot what the file is about to change.
+      m.beforeImport = { services:[...p.services], blockStatus:{...p.blockStatus}, targetWeeks:{...p.targetWeeks} };
+      if(!p.services.includes(parsed.service)) p.services = [...p.services, parsed.service];
+      const unclear = [];
+      for(const r of parsed.weekRows){
+        if(r.guess==='unclear'){ delete p.blockStatus[r.block.key]; unclear.push(r.block.key); }
+        else if(r.guess==='neutral'){ delete p.blockStatus[r.block.key]; }
+        else p.blockStatus[r.block.key] = r.guess;
+      }
+      if(parsed.targetGuess!=null) p.targetWeeks[parsed.service] = parsed.targetGuess;
+      const tooLarge = buf.byteLength > MAX_UPLOAD_BYTES;
+      m.pendingUpload = { filename:file.name, service:parsed.service, size:buf.byteLength, base64: tooLarge?null:arrayBufferToBase64(buf), tooLarge };
+      m.attachedFilename = file.name;
+      m.importUnclearKeys = unclear;
+      toast(`Applied ${file.name}${unclear.length?` — ${unclear.length} week(s) need review (highlighted below)`:''}. Save to keep these changes.`);
+      renderPersonModal();
+    };
+    reader.readAsArrayBuffer(file);
+  };
+  const undoBtn = document.getElementById('btnUndoImport');
+  if(undoBtn) undoBtn.onclick = ()=>{
+    if(m.beforeImport){ p.services = m.beforeImport.services; p.blockStatus = m.beforeImport.blockStatus; p.targetWeeks = m.beforeImport.targetWeeks; }
+    m.pendingUpload = null; m.attachedFilename = null; m.importUnclearKeys = null; m.beforeImport = null;
+    toast('Reverted.');
+    renderPersonModal();
+  };
   document.getElementById('btnSavePerson').onclick = ()=>{
     try{
       p.name = document.getElementById('pName').value.trim() || 'Unnamed';
@@ -1547,11 +1679,22 @@ function renderPersonModal(){
       if(m.isNew){ state.people.push(personDoc); }
       else{ const idx = state.people.findIndex(x=>x.id===m.id); if(idx>=0) state.people[idx]=personDoc; }
       state.comments[personDoc.id] = {...comments};
-      closePersonModal();
-      renderPeopleList();
-      toast('Person saved.');
       persistPerson(personDoc); // background; never blocks the UI
       persistComments(personDoc.id, comments); // background; never blocks the UI
+      if(m.pendingUpload && m.pendingUpload.base64){
+        const uploadId = uid();
+        const uploadDoc = { personId:personDoc.id, personName:personDoc.name, filename:m.pendingUpload.filename, service:m.pendingUpload.service,
+          uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:m.pendingUpload.size, data:m.pendingUpload.base64 };
+        state.uploads.unshift({ id:uploadId, ...uploadDoc });
+        persistUpload(uploadId, uploadDoc); // background
+        toast('Person saved. Request file attached.');
+      } else if(m.pendingUpload && m.pendingUpload.tooLarge){
+        toast(`Person saved. (Couldn't keep a copy of ${m.pendingUpload.filename} — ${prettyBytes(m.pendingUpload.size)} is over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.)`);
+      } else {
+        toast('Person saved.');
+      }
+      closePersonModal();
+      renderPeopleList();
     }catch(e){ toast('Something went wrong saving: '+e.message); console.error(e); }
   };
 }
@@ -1611,6 +1754,125 @@ function renderClosePeriodModal(){
       renderAll();
       toast('Period archived — new period started.');
     }catch(e){ toast('Something went wrong: '+e.message); console.error(e); btn.disabled=false; btn.textContent='Archive & start new period'; }
+  };
+}
+
+/* ---- Review uploads: browse retained .xlsx copies with fluid prev/next
+   navigation. Shares the person-modal overlay/dialog (widened via
+   .modal-wide, toggled in renderModal()). opts.personId pre-filters to one
+   person's uploads (used by their "View .xlsx" button); omit to browse
+   everything. ---- */
+function openReviewUploadsModal(opts){
+  state.modal = { mode:'reviewUploads', filterPersonId:(opts&&opts.personId)||null, query:'', selectedId:null };
+  document.getElementById('personModalOverlay').hidden = false;
+  document.addEventListener('keydown', onModalKeydown);
+  renderModal();
+}
+/** state.uploads is kept sorted newest-first (see loadUploads/the import
+ * save handler), so a filtered slice of it stays newest-first too. */
+function filteredUploadsList(filterPersonId, query){
+  const q = (query||'').trim().toLowerCase();
+  return state.uploads.filter(u=>{
+    if(filterPersonId && u.personId!==filterPersonId) return false;
+    if(q && !(u.personName.toLowerCase().includes(q) || u.filename.toLowerCase().includes(q))) return false;
+    return true;
+  });
+}
+function stepReviewUploads(delta){
+  const m = state.modal;
+  if(!m || m.mode!=='reviewUploads') return;
+  const list = filteredUploadsList(m.filterPersonId, m.query);
+  if(list.length===0) return;
+  const idx = list.findIndex(u=>u.id===m.selectedId);
+  m.selectedId = list[idx<0 ? 0 : (idx+delta+list.length)%list.length].id;
+  refreshUploadsBody();
+}
+function renderXlsxPreviewHtml(u){
+  try{
+    const wb = XLSX.read(base64ToArrayBuffer(u.data), {type:'array', cellDates:true});
+    return XLSX.utils.sheet_to_html(wb.Sheets[wb.SheetNames[0]], {header:'', footer:''}); // bare <table> — sheet_to_html's default wraps a whole <html><body>, invalid dropped straight into a div
+  }catch(e){ return `<div class="empty-state">Couldn't render this file: ${esc(e.message)}</div>`; }
+}
+function renderReviewUploadsModal(){
+  const dialog = document.getElementById('personModalDialog');
+  const m = state.modal;
+  dialog.innerHTML = `
+    <div class="row between" style="margin-bottom:14px;">
+      <h2>Review uploads</h2>
+      <button class="btn btn-ghost btn-sm" id="btnCloseModal">✕</button>
+    </div>
+    <div class="row gap-8" style="margin-bottom:12px;flex-wrap:wrap;">
+      <input class="input" type="text" id="ruQuery" placeholder="Search name or filename…" value="${esc(m.query)}" style="max-width:260px;">
+      <span id="ruPersonChip"></span>
+      <span class="hint" id="ruCount"></span>
+    </div>
+    <div id="ruBody"></div>
+  `;
+  document.getElementById('btnCloseModal').onclick = closePersonModal;
+  // Refreshes only the list/detail below, never the search input itself —
+  // re-rendering that on every keystroke would steal focus and cursor position.
+  document.getElementById('ruQuery').oninput = e=>{ m.query = e.target.value; refreshUploadsBody(); };
+  refreshUploadsBody();
+}
+function refreshUploadsBody(){
+  const m = state.modal;
+  if(!m || m.mode!=='reviewUploads') return;
+  const list = filteredUploadsList(m.filterPersonId, m.query);
+  if(!list.some(u=>u.id===m.selectedId)) m.selectedId = list.length ? list[0].id : null;
+  const selected = list.find(u=>u.id===m.selectedId) || null;
+  const filterPerson = m.filterPersonId ? state.people.find(p=>p.id===m.filterPersonId) : null;
+  const idx = selected ? list.findIndex(u=>u.id===selected.id) : -1;
+
+  document.getElementById('ruPersonChip').innerHTML = filterPerson
+    ? `<span class="chip" style="display:inline-flex;align-items:center;gap:6px;">Filtering: ${esc(filterPerson.name)} <button class="btn-ghost" id="btnClearPersonFilter" style="border:none;background:none;cursor:pointer;color:var(--bad);font-family:inherit;">✕</button></span>`
+    : '';
+  document.getElementById('ruCount').textContent = `${list.length} file(s)${list.length>1?' — use ← / → to browse':''}`;
+  const clearBtn = document.getElementById('btnClearPersonFilter');
+  if(clearBtn) clearBtn.onclick = ()=>{ m.filterPersonId = null; refreshUploadsBody(); };
+
+  const body = document.getElementById('ruBody');
+  if(list.length===0){
+    body.innerHTML = `<div class="empty-state"><strong>No uploads${filterPerson||m.query?' match this filter':' yet'}</strong>${filterPerson||m.query?'':'Imported request files are kept here until this period is closed.'}</div>`;
+    return;
+  }
+  body.innerHTML = `
+    <div class="uploads-layout">
+      <div class="uploads-list">
+        ${list.map(u=>`<button class="upload-row ${selected&&u.id===selected.id?'active':''}" data-upload-id="${u.id}">
+          <div class="name">${esc(u.personName)}</div>
+          <div class="meta"><span class="badge badge-${u.service.toLowerCase()}" style="padding:1px 6px;"><span class="badge-dot"></span>${u.service}</span> ${esc(u.filename)}</div>
+          <div class="meta">${esc(new Date(u.uploadedAt).toLocaleString())} · ${prettyBytes(u.size||0)}</div>
+        </button>`).join('')}
+      </div>
+      <div>
+        ${selected?`
+        <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:8px;">
+          <div>
+            <strong>${esc(selected.filename)}</strong>
+            <div class="hint">${esc(selected.personName)} · uploaded ${esc(new Date(selected.uploadedAt).toLocaleString())} by ${esc(selected.uploadedBy||'—')}${list.length>1?` · ${idx+1} of ${list.length}`:''}</div>
+          </div>
+          <div class="row gap-8">
+            <button class="btn btn-sm" id="btnPrevUpload" ${list.length<2?'disabled':''}>← Prev</button>
+            <button class="btn btn-sm" id="btnNextUpload" ${list.length<2?'disabled':''}>Next →</button>
+            <button class="btn btn-sm btn-ghost" id="btnDownloadUpload">Download</button>
+            <button class="btn btn-sm btn-danger" id="btnDeleteUpload">Delete</button>
+          </div>
+        </div>
+        <div class="xlsx-preview">${renderXlsxPreviewHtml(selected)}</div>
+        `:''}
+      </div>
+    </div>`;
+  body.querySelectorAll('[data-upload-id]').forEach(btn=> btn.onclick = ()=>{ m.selectedId = btn.dataset.uploadId; refreshUploadsBody(); });
+  const prevBtn = document.getElementById('btnPrevUpload'); if(prevBtn) prevBtn.onclick = ()=> stepReviewUploads(-1);
+  const nextBtn = document.getElementById('btnNextUpload'); if(nextBtn) nextBtn.onclick = ()=> stepReviewUploads(1);
+  const dlBtn = document.getElementById('btnDownloadUpload');
+  if(dlBtn) dlBtn.onclick = ()=> downloadBlob(new Blob([base64ToArrayBuffer(selected.data)], {type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), selected.filename);
+  const delBtn = document.getElementById('btnDeleteUpload');
+  if(delBtn) delBtn.onclick = ()=>{
+    if(!confirm(`Delete this retained copy of ${selected.filename}? This can't be undone.`)) return;
+    state.uploads = state.uploads.filter(u=>u.id!==selected.id);
+    persistDeleteUpload(selected.id); // background
+    refreshUploadsBody();
   };
 }
 
@@ -1744,20 +2006,24 @@ function processNextImportFile(){
   const file = state.importQueue.shift();
   const reader = new FileReader();
   reader.onload = (e)=>{
+    const buf = e.target.result;
     let wb;
-    try{ wb = XLSX.read(e.target.result, {type:'array', cellDates:true}); }
+    try{ wb = XLSX.read(buf, {type:'array', cellDates:true}); }
     catch(err){ toast(`Couldn't read ${file.name}: ${err.message}`); processNextImportFile(); return; }
     const filenameGuess = file.name.replace(/\.xlsx$/i,'').trim();
     const parsed = parseRequestWorkbook(wb, filenameGuess);
     if(parsed.error){ toast(`${file.name}: ${parsed.error}`); processNextImportFile(); return; }
     const name = parsed.nameFromSheet || parsed.filenameGuess;
     const existing = state.people.find(p=>p.name.trim().toLowerCase()===name.trim().toLowerCase());
+    const fileTooLarge = buf.byteLength > MAX_UPLOAD_BYTES;
     state.modal = {
       mode:'import', filename:file.name, service:parsed.service, unmatchedCount:parsed.unmatchedCount,
       queueRemaining: state.importQueue.length,
       name, targetWeeks: parsed.targetGuess!=null?parsed.targetGuess:'',
       existingId: existing?existing.id:null,
-      rows: parsed.weekRows.map(r=>({ block:r.block, rawText:r.rawText, guess:r.guess, selected: r.guess==='unclear' ? 'neutral' : r.guess }))
+      rows: parsed.weekRows.map(r=>({ block:r.block, rawText:r.rawText, guess:r.guess, selected: r.guess==='unclear' ? 'neutral' : r.guess })),
+      fileSize: buf.byteLength, fileTooLarge,
+      fileBase64: fileTooLarge ? null : arrayBufferToBase64(buf)
     };
     document.getElementById('personModalOverlay').hidden = false;
     document.addEventListener('keydown', onModalKeydown);
@@ -1835,8 +2101,19 @@ function renderImportModal(){
         if(r.selected==='neutral') delete person.blockStatus[r.block.key];
         else person.blockStatus[r.block.key] = r.selected;
       }
-      toast(`Saved ${name}.`);
       persistPerson(person); // background; never blocks moving to the next file
+      if(m.fileBase64){
+        const uploadId = uid();
+        const uploadDoc = { personId:person.id, personName:person.name, filename:m.filename, service:m.service,
+          uploadedAt:new Date().toISOString(), uploadedBy:myEmail(), size:m.fileSize, data:m.fileBase64 };
+        state.uploads.unshift({ id:uploadId, ...uploadDoc });
+        persistUpload(uploadId, uploadDoc); // background
+        toast(`Saved ${name}.`);
+      } else if(m.fileTooLarge){
+        toast(`Saved ${name}. (Couldn't keep a copy of the file — ${prettyBytes(m.fileSize)} is over the ${prettyBytes(MAX_UPLOAD_BYTES)} limit.)`);
+      } else {
+        toast(`Saved ${name}.`);
+      }
       processNextImportFile();
     }catch(e){ toast('Something went wrong saving this import: '+e.message); console.error(e); }
   };
@@ -2196,6 +2473,7 @@ async function bootForUser(user){
     if(state.auth.isAdmin){
       await withTimeout(loadAdmins(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
       await withTimeout(loadPeriodsArchive(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
+      await withTimeout(loadUploads(), DB_TIMEOUT_MS, timeoutMsg).catch(()=>{});
     }
     rebuildBlocks();
     document.getElementById('loadingScreen').hidden = true;

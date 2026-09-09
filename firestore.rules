@@ -31,6 +31,9 @@ rules_version = '2';
 // - periods/{id}: read-only archives of closed scheduling periods, written
 //   when an admin closes one out. Admin-only both ways — history isn't
 //   shown to staff.
+// - uploads/{id}: retained copies of imported request .xlsx files, kept
+//   only until the current period is closed (the app deletes them all at
+//   that point — see persistClosePeriod). Admin-only both ways.
 
 service cloud.firestore {
   match /databases/{database}/documents {
@@ -110,6 +113,10 @@ service cloud.firestore {
     }
 
     match /periods/{periodId} {
+      allow read, write: if isAdmin();
+    }
+
+    match /uploads/{uploadId} {
       allow read, write: if isAdmin();
     }
   }
