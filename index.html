@@ -150,16 +150,23 @@ tr.hoverable:hover td{ background:var(--surface-2); }
 .modal-dialog{ background:var(--surface); border:1px solid var(--line); border-radius:var(--radius); box-shadow:var(--shadow); max-width:660px; width:100%; padding:24px; margin-bottom:5vh; }
 .modal-dialog.modal-wide{ max-width:1040px; }
 @media(max-width:720px){ .modal-overlay{ padding:0; align-items:stretch; } .modal-dialog{ max-width:none; border-radius:0; min-height:100%; margin-bottom:0; } }
-.uploads-layout{ display:grid; grid-template-columns:280px 1fr; gap:16px; align-items:start; }
+/* 220px + minmax(0,1fr) rather than the old 280px + 1fr: a bare "1fr" track
+ * never shrinks below its content's width, so a wide sheet used to push the
+ * preview (and the whole modal) past the viewport edge; minmax(0,1fr) lets
+ * the column shrink to the available space and hand overflow to
+ * .xlsx-preview's own scrollbar instead. The narrower fixed column also
+ * keeps the file list from crowding out the sheet itself. */
+.uploads-layout{ display:grid; grid-template-columns:220px minmax(0,1fr); gap:16px; align-items:start; min-width:0; }
 @media(max-width:720px){ .uploads-layout{ grid-template-columns:1fr; } }
 .uploads-list{ max-height:60vh; overflow-y:auto; border:1px solid var(--line); border-radius:9px; background:var(--bg); }
-.upload-row{ display:block; width:100%; text-align:left; border:none; background:none; padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line); font-family:inherit; color:inherit; }
+.upload-row{ display:block; width:100%; text-align:left; border:none; background:none; padding:9px 12px; cursor:pointer; border-bottom:1px solid var(--line); font-family:inherit; color:inherit; overflow-wrap:anywhere; }
 .upload-row:last-child{ border-bottom:none; }
 .upload-row:hover{ background:var(--surface-2); }
 .upload-row.active{ background:var(--aps-soft); }
 .upload-row .name{ font-weight:600; font-size:13px; }
 .upload-row .meta{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; }
-.xlsx-preview{ overflow:auto; max-height:56vh; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:8px; }
+.uploads-detail{ min-width:0; overflow-wrap:anywhere; }
+.xlsx-preview{ overflow:auto; max-height:56vh; min-width:0; background:var(--surface); border:1px solid var(--line); border-radius:9px; padding:8px; }
 .xlsx-preview table{ border-collapse:collapse; font-size:12.5px; }
 .xlsx-preview td, .xlsx-preview th{ border:1px solid var(--line); padding:4px 8px; white-space:nowrap; color:var(--ink); }
 .month-group{ margin-bottom:14px; }
@@ -1933,7 +1940,7 @@ function refreshUploadsBody(){
           <div class="meta">${esc(new Date(u.uploadedAt).toLocaleString())} · ${prettyBytes(u.size||0)}</div>
         </button>`).join('')}
       </div>
-      <div>
+      <div class="uploads-detail">
         ${selected?`
         <div class="row between" style="margin-bottom:10px;flex-wrap:wrap;gap:8px;">
           <div>
