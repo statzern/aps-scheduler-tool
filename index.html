@@ -423,6 +423,7 @@ const state = {
   admins: [],            // [{email, addedAt, addedBy}] — loaded for admins only, see loadAdmins()
   rosterView: 'list',    // 'list' | 'calendar' — admin Roster & Requests sub-view
   calendarFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true },
+  scheduleFilters: { services:{APS:true, PCS:true}, uiOpen:false }, // Schedule tab's service filter — narrows the stat tiles and table to APS, PCS, or both
   myRequestsFilters: null, // lazily created per person — see ensureMyRequestsFilters()
   personModalFilters: { services:{APS:true, PCS:true}, statuses:{neutral:true, requested:true, unavailable:true}, holidaysOnly:false, uiOpen:true }, // shared across the admin person-edit modal, same as calendarFilters
   comments: {},          // personId -> {blockKey:'free text'} — private notes; own doc(s) for staff, all docs for admins. See personComments/ in Firestore.
@@ -2287,8 +2288,14 @@ function renderSchedule(){
   const el = document.getElementById('panel-schedule');
   const ctx = currentViewContext();
   const canGenerate = ctx.editable && ctx.blocks.length>0 && ctx.people.length>0;
-  const filled = ctx.blocks.filter(b=>ctxAssignment(ctx,b.key)).length;
-  const lockCount = Object.keys(ctx.locks).length;
+  const f = state.scheduleFilters;
+  // Export/Generate always act on the whole schedule regardless of this
+  // filter — it's a display-only lens over the stat tiles and table below.
+  const filteredBlocks = ctx.blocks.filter(b=>f.services[b.service]);
+  const filled = filteredBlocks.filter(b=>ctxAssignment(ctx,b.key)).length;
+  const filteredKeys = new Set(filteredBlocks.map(b=>b.key));
+  const lockCount = Object.keys(ctx.locks).filter(k=>filteredKeys.has(k)).length;
+  const bothServices = f.services.APS && f.services.PCS;
   el.innerHTML = `
     <div class="card">
       <div class="row between">
@@ -2301,10 +2308,20 @@ function renderSchedule(){
       ${effectiveAdminView() && ctx.editable && !canGenerate?`<div class="hint" style="margin-top:10px;">${ctx.blocks.length===0?'Set a date range in Setup first.':'Add at least one person to the roster first.'}</div>`:''}
     </div>
     ${ctx.blocks.length>0 ? `
+    <details class="filter-card" id="schedFilterDetails" style="margin-top:16px;" ${f.uiOpen?'open':''}>
+      <summary>Filter <span class="filter-count">— ${bothServices?'APS &amp; PCS':f.services.APS?'APS only':f.services.PCS?'PCS only':'nothing selected'}</span></summary>
+      <div>
+        <div class="filter-group-label">Service</div>
+        <div class="row gap-8">
+          <label class="checkbox-row"><input type="checkbox" id="schedfAPS" ${f.services.APS?'checked':''}> APS</label>
+          <label class="checkbox-row"><input type="checkbox" id="schedfPCS" ${f.services.PCS?'checked':''}> PCS</label>
+        </div>
+      </div>
+    </details>
     <div class="stat-grid" style="margin-top:16px;">
-      <div class="stat"><div class="num mono">${ctx.blocks.length}</div><div class="lbl">Total weeks</div></div>
-      <div class="stat"><div class="num mono" style="color:${filled===ctx.blocks.length?'var(--good)':'var(--bad)'}">${filled}/${ctx.blocks.length}</div><div class="lbl">Filled</div></div>
-      <div class="stat"><div class="num mono">${countRequestsSatisfied(ctx)}/${countRequestsTotal(ctx)}</div><div class="lbl">Requests honored</div></div>
+      <div class="stat"><div class="num mono">${filteredBlocks.length}</div><div class="lbl">Total weeks</div></div>
+      <div class="stat"><div class="num mono" style="color:${filled===filteredBlocks.length?'var(--good)':'var(--bad)'}">${filled}/${filteredBlocks.length}</div><div class="lbl">Filled</div></div>
+      <div class="stat"><div class="num mono">${countRequestsSatisfied(ctx,filteredBlocks)}/${countRequestsTotal(filteredBlocks,ctx.people)}</div><div class="lbl">Requests honored</div></div>
       <div class="stat"><div class="num mono">${lockCount||'—'}</div><div class="lbl">Weeks pinned by hand</div></div>
     </div>` : ''}
     <div class="card" id="scheduleTableCard" style="margin-top:16px;"></div>
@@ -2324,12 +2341,23 @@ function renderSchedule(){
   };
   const exportBtn = document.getElementById('btnExportSchedule');
   if(exportBtn) exportBtn.onclick = exportScheduleXlsx;
-  renderScheduleTable(ctx);
+  const filterDetails = document.getElementById('schedFilterDetails');
+  if(filterDetails) filterDetails.addEventListener('toggle', e=>{ f.uiOpen = e.target.open; });
+  const fAPS = document.getElementById('schedfAPS'); if(fAPS) fAPS.onchange = e=>{ f.services.APS=e.target.checked; renderSchedule(); };
+  const fPCS = document.getElementById('schedfPCS'); if(fPCS) fPCS.onchange = e=>{ f.services.PCS=e.target.checked; renderSchedule(); };
+  renderScheduleTable(ctx, filteredBlocks);
 }
-function countRequestsTotal(ctx){ let n=0; for(const p of ctx.people) n += Object.values(p.blockStatus).filter(v=>v==='requested').length; return n; }
-function countRequestsSatisfied(ctx){
+/** blocks passed in are whatever's currently filtered/visible — see
+ * renderSchedule's service filter above. */
+function countRequestsTotal(blocks, people){
+  const keys = new Set(blocks.map(b=>b.key));
   let n=0;
-  for(const b of ctx.blocks){
+  for(const p of people) for(const [k,v] of Object.entries(p.blockStatus)) if(v==='requested' && keys.has(k)) n++;
+  return n;
+}
+function countRequestsSatisfied(ctx, blocks){
+  let n=0;
+  for(const b of blocks){
     const pid = ctxAssignment(ctx,b.key); if(!pid) continue;
     const p = ctx.people.find(x=>x.id===pid);
     if(p && p.blockStatus[b.key]==='requested') n++;
@@ -2369,15 +2397,16 @@ function renderWeekStatusCell(b, status, ctx, label){
   if(!clickable) return `<td class="hint"${titleAttr}>${text}</td>`;
   return `<td class="hint"><button type="button" class="status-link" data-assign-key="${b.key}" data-assign-status="${status}"${titleAttr}>${text}</button></td>`;
 }
-function renderScheduleTable(ctx){
+function renderScheduleTable(ctx, blocks){
   const card = document.getElementById('scheduleTableCard');
   if(!card) return;
   if(ctx.blocks.length===0){ card.innerHTML=''; return; }
+  if(blocks.length===0){ card.innerHTML = `<div class="empty-state" style="padding:32px;"><strong>Nothing matches this filter</strong>Turn on APS or PCS above to see weeks.</div>`; return; }
   const hasSchedule = Object.keys(ctx.assignment).length>0 || Object.keys(ctx.locks).length>0;
   card.innerHTML = `<div class="table-wrap"><table>
     <thead><tr><th>Service</th><th>Week</th><th>Post-call</th><th>Wanted</th><th>Available</th><th>Declined</th><th>Assigned to</th></tr></thead>
     <tbody>
-      ${ctx.blocks.map(b=>{
+      ${blocks.map(b=>{
         const pid = ctxAssignment(ctx,b.key);
         const locked = !!ctx.locks[b.key];
         const p = pid ? ctx.people.find(x=>x.id===pid) : null;
